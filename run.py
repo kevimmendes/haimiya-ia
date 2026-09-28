@@ -61,6 +61,9 @@ SEARCH_MEMORY_FILE = "Arcana/armazen/pesquisa_memoria.json"
 VISAO_HABILITADA = False # Controlo global do F2
 CONTADOR_VISAO = 0       # Contador para limpar a memória visual
 
+# 🔥 SISTEMA DE FERRAMENTAS (global, como VISAO_HABILITADA - inicializado no main)
+TOOLS_SYSTEM = None
+
 def abrir_gui_modelos():
     def salvar():
         if os.path.exists(BRAIN_FILE):
@@ -330,19 +333,6 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += f"\n📂 APLICATIVOS INSTALADOS: {nomes_apps}."
         prompt_completo += "\nPara abrir ou pesquisar no navegador/youtube, use: <APP:abrir:alvo:termo_de_busca>."
         
-        prompt_completo += "\n\n[FERRAMENTAS ADICIONAIS]:"
-        prompt_completo += "\n- <COMPUTER:mouse> - Mover mouse"
-        prompt_completo += "\n- <COMPUTER:clicar> - Clicar com mouse"
-        prompt_completo += "\n- <COMPUTER:digitar:texto> - Digitar texto"
-        prompt_completo += "\n- <COMPUTER:atalho:ctrl+c> - Executar atalho"
-        prompt_completo += "\n- <COMPUTER:pressionar:enter> - Pressionar tecla"
-        prompt_completo += "\n- <COMPUTER:capturar> - Capturar screenshot"
-        prompt_completo += "\n- <COMPUTER:analisar> - Analisar tela"
-        prompt_completo += "\n- <COMPUTER:arquivos:nome> - Buscar arquivos"
-        prompt_completo += "\n- <COMPUTER:pasta:nome> - Listar pasta"
-        prompt_completo += "\n- <COMPUTAR:tarefa:nome> - Iniciar tarefa planejada"
-        prompt_completo += "\n- <COMPUTER:status> - Ver status da tarefa"
-        
         prompt_completo += "\n\n[MANUAL DO PLAYER DE MÚSICA]:"
         prompt_completo += "\n- TOCAR: <PLAY:nome_da_musica>"
         prompt_completo += "\n- PULAR: <SKIP>"
@@ -352,6 +342,24 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n1. É OBRIGATÓRIO escrever uma frase sua (entre 1 e 7 palavras) ANTES de colocar a tag. NUNCA envie apenas a tag! (Ex: 'Aqui está a sua música. <PLAY:rock>')."
         prompt_completo += "\n2. NUNCA tente adivinhar nomes de músicas de animes ou séries. O sistema usa o YouTube, por isso gere a tag EXATAMENTE com as palavras que o usuário usou."
         prompt_completo += "\n3. É ESTRITAMENTE PROIBIDO tocar música do nada. NUNCA use a tag <PLAY> se o usuário não lhe deu uma ordem clara para tocar algo."
+
+    if TOOLS_SYSTEM and TOOLS_SYSTEM.enabled:
+        prompt_completo += "\n\n[FERRAMENTAS DE AUTOMAÇÃO DO PC]:"
+        prompt_completo += "\nVocê pode executar ações reais no computador. Use estas tags:"
+        prompt_completo += "\n- <COMPUTER:mover_mouse:x,y> - Mover o cursor para a posição x,y"
+        prompt_completo += "\n- <COMPUTER:clicar> - Clique esquerdo"
+        prompt_completo += "\n- <COMPUTER:clicar:right,2> - Clique direito ou duplo clique"
+        prompt_completo += "\n- <COMPUTER:digitar:texto> - Digitar texto no programa aberto"
+        prompt_completo += "\n- <COMPUTER:pressionar:enter> - Pressionar uma tecla"
+        prompt_completo += "\n- <COMPUTER:atalho:ctrl+c> - Atalho de teclado"
+        prompt_completo += "\n- <COMPUTER:capturar_tela> - Capturar a tela"
+        prompt_completo += "\n- <COMPUTER:analisar_tela:o que quer que veja> - Analisar a tela com visão"
+        prompt_completo += "\n- <COMPUTER:listar_arquivos:termo> - Procurar arquivos no PC"
+        prompt_completo += "\n- <COMPUTER:abrir_pasta:caminho> - Listar o conteúdo de uma pasta"
+        prompt_completo += "\n- <COMPUTER:nova_tarefa:nome> - Criar um plano em etapas"
+        prompt_completo += "\n- <COMPUTER:status_tarefa> - Ver o progresso da tarefa"
+        prompt_completo += "\nREGRA: só use estas tags quando o usuário pedir a ação de verdade. Nunca diga que já fez algo sem executado."
+
     # Integração de Memórias
     memoria_pesquisa = carregar_memoria_pesquisa()
     if memoria_pesquisa.get("master_search_summary"):
@@ -582,7 +590,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     try:
                         parts = param.split(',')
                         x, y = int(parts[0]), int(parts[1]) if len(parts) > 1 else (0, 0)
-                        tools_system.move_mouse(x, y)
+                        TOOLS_SYSTEM.move_mouse(x, y)
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Mouse movido para ({x}, {y})"})
                     except:
                         pass
@@ -591,41 +599,41 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         parts = param.split(',')
                         button = parts[0] if parts else "left"
                         clicks = int(parts[1]) if len(parts) > 1 else 1
-                        tools_system.click(button=button, clicks=clicks)
+                        TOOLS_SYSTEM.click(button=button, clicks=clicks)
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Clique {button} ({clicks}x) executado"})
                     except:
                         pass
                 elif action == "digitar" and param:
-                    tools_system.type_text(param)
+                    TOOLS_SYSTEM.type_text(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Texto digitado: '{param[:30]}...'"})
                 elif action == "atalho" and param:
                     keys = param.split('+')
-                    tools_system.hotkey(*keys)
+                    TOOLS_SYSTEM.hotkey(*keys)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Atalho '{'+'.join(keys)}' executado"})
                 elif action == "pressionar" and param:
-                    tools_system.press_key(param)
+                    TOOLS_SYSTEM.press_key(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Tecla '{param}' pressionada"})
                 elif action == "capturar_tela":
-                    img = tools_system.capture_screen()
+                    img = TOOLS_SYSTEM.capture_screen()
                     if img:
                         historico_api.append({"role": "user", "content": "[SISTEMA] Screenshot capturado"})
                 elif action == "analisar_tela" and param:
-                    analysis = tools_system.analyze_screen(param)
+                    analysis = TOOLS_SYSTEM.analyze_screen(param)
                     if analysis:
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Análise: {analysis[:200]}..."})
                 elif action == "listar_arquivos" and param:
-                    files = tools_system.search_files(param)
+                    files = TOOLS_SYSTEM.search_files(param)
                     if files:
                         file_list = '\n'.join([os.path.basename(f) for f in files[:10]])
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Arquivos encontrados:\n{file_list}"})
                 elif action == "abrir_pasta" and param:
-                    tools_system.list_directory(param)
+                    TOOLS_SYSTEM.list_directory(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Listando pasta '{param}'"})
                 elif action == "nova_tarefa" and param:
-                    tools_system.start_task(param)
+                    TOOLS_SYSTEM.start_task(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Tarefa '{param}' iniciada"})
                 elif action == "status_tarefa":
-                    status = tools_system.get_task_status()
+                    status = TOOLS_SYSTEM.get_task_status()
                     if status:
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Tarefa: {status.get('task', 'N/A')}, Progresso: {status.get('progress', '0')}%"})
         
@@ -812,7 +820,8 @@ async def main():
     launcher = AppLauncher()
 
     # 🔥 INICIA O SISTEMA DE FERRAMENTAS
-    tools_system = ToolsSystem(output_callback=print, vision_client=client_vision)
+    global TOOLS_SYSTEM
+    TOOLS_SYSTEM = ToolsSystem(output_callback=print, vision_client=client_vision)
 
     carregar_memoria()
     
