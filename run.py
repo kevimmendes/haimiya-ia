@@ -73,6 +73,52 @@ MODELO_VISAO = os.getenv("VISAO_MODELO", "").strip() or (
 )
 VISAO_LOCAL = VISAO_PROVEDOR in ("local", "ollama", "lmstudio")
 
+# ======================================================
+# 🚦 LIMITE DE PEDIDOS ("many requests" / 429)
+# ======================================================
+# A Groq corta pedidos quando o limite da conta estoura. Sem isto, um unico
+# erro matava a resposta da Haimiya na hora e ela ficava calada sem dizer
+# nada. Agora: espera, volta a tentar, e se nao houver jeito avisa em portugues.
+ESPERAS_RATE_LIMIT = [4, 10, 25]   # segundos entre tentativas
+
+
+def _e_rate_limit(erro):
+    """Diz se a excecao e um limite de pedidos (429 / many requests)."""
+    if erro.__class__.__name__ == "RateLimitError":
+        return True
+    if getattr(erro, "status_code", None) == 429:
+        return True
+    txt = str(erro).lower()
+    return "429" in txt or "rate limit" in txt or "many requests" in txt or "too many" in txt
+
+
+async def chamada_com_tentativas(func, tentativas_extra=3, o_que="o cerebro"):
+    """Chama a API e, se for limite de pedidos, espera e volta a tentar.
+
+    Por omissao sao 4 tentativas com esperas de 4s, 10s e 25s (39s no total).
+    Isso porque o limite da Groq conta por minuto: esperar so 4s nao resolve,
+    era preciso dar para a janela de 1 minuto passar.
+
+    Devolve a resposta, ou None se desistir. Nao deixa o erro rebentar a
+    conversa: quem chama decide o que dizer ao utilizador.
+    """
+    esperas = ESPERAS_RATE_LIMIT[:tentativas_extra]
+    for tentativa in range(len(esperas) + 1):
+        try:
+            return await asyncio.to_thread(func)
+        except Exception as e:
+            if not _e_rate_limit(e):
+                raise
+            if tentativa >= len(esperas):
+                print(f" [LIMITE] {o_que}: limite de pedidos da Groq. Desisti apos {tentativa + 1} tentativas.")
+                return None
+            espera = esperas[tentativa]
+            print(f" [LIMITE] {o_que}: 'many requests'. A tentar de novo dentro de {espera}s "
+                  f"(tentativa {tentativa + 2}/{len(esperas) + 1})...")
+            await asyncio.sleep(espera)
+    return None
+
+
 # 🔥 IMPORTAÇÃO DA INTERFACE GRÁFICA ATUALIZADA
 from Arcana.Apps.gui_handler import RemGUI
 
@@ -320,11 +366,15 @@ async def gerenciar_memoria_pesquisa(client_llm, query, resultados):
 async def resumir_com_ia(client_llm, textos, comando):
     texto_junto = "\n".join(textos)
     try:
-        res = await asyncio.to_thread(lambda: client_llm.chat.completions.create(
-            model=MODELO_LLM, 
-            messages=[{"role": "system", "content": comando}, {"role": "user", "content": texto_junto}],
-            temperature=0.3
-        ))
+        res = await chamada_com_tentativas(
+            lambda: client_llm.chat.completions.create(
+                model=MODELO_LLM,
+                messages=[{"role": "system", "content": comando}, {"role": "user", "content": texto_junto}],
+                temperature=0.3
+            ),
+            o_que="resumo de memoria")
+        if res is None:
+            return ""
         return res.choices[0].message.content
     except Exception as e:
         print(f" Erro ao resumir memória: {e}")
@@ -586,18 +636,22 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         if b64_img:
             prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes.\nO usuário pediu: '{texto}'. Foque nisso."
             try:
-                res_vision = await asyncio.to_thread(lambda: client_vision.chat.completions.create(
-                    model=MODELO_VISAO,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_vision},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                        ]
-                    }],
-                    max_tokens=1024,
-                    temperature=0.1
-                ))
+                res_vision = await chamada_com_tentativas(
+                    lambda: client_vision.chat.completions.create(
+                        model=MODELO_VISAO,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt_vision},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                            ]
+                        }],
+                        max_tokens=1024,
+                        temperature=0.1
+                    ),
+                    o_que="visao")
+                if res_vision is None:
+                    raise RuntimeError("limite de pedidos na visao")
                 descricao_imagem = res_vision.choices[0].message.content
                 print(f" [ANÁLISE SCOUT CONCLUÍDA]")
 
@@ -636,7 +690,13 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         }
         if extra: kwargs_initial["extra_body"] = extra
 
-        res = await asyncio.to_thread(lambda: cliente_ativo.chat.completions.create(**kwargs_initial))
+        res = await chamada_com_tentativas(
+            lambda: cliente_ativo.chat.completions.create(**kwargs_initial),
+            o_que="primeira resposta")
+        if res is None:
+            resposta_final = f"{nome_ai}: estou a levar com o limite de pedidos da API. Tenta daqui a bocado."
+            print(f" {resposta_final}")
+            return
         resposta_inicial = res.choices[0].message.content
         resposta_inicial = re.sub(r'<think>.*?</think>', '', resposta_inicial, flags=re.IGNORECASE | re.DOTALL).strip()
         
@@ -899,9 +959,14 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
             }
             if extra: kwargs_final["extra_body"] = extra
 
-            res_final = await asyncio.to_thread(lambda: cliente_ativo.chat.completions.create(**kwargs_final))
-            resposta_final = res_final.choices[0].message.content
-            resposta_final = re.sub(r'<think>.*?</think>', '', resposta_final, flags=re.IGNORECASE | re.DOTALL).strip()
+            res_final = await chamada_com_tentativas(
+                lambda: cliente_ativo.chat.completions.create(**kwargs_final),
+                o_que="resposta final")
+            if res_final is None:
+                resposta_final = resposta_inicial or "Feito."
+            else:
+                resposta_final = res_final.choices[0].message.content
+                resposta_final = re.sub(r'<think>.*?</think>', '', resposta_final, flags=re.IGNORECASE | re.DOTALL).strip()
 
         # 🧹 LIMPEZA BRUTAL FINAL: Remove qualquer outra tag <...> do terminal 
         resposta_final = re.sub(r'<[^>]+>', '', resposta_final).strip()
@@ -910,13 +975,19 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         if not resposta_final:
             historico_fallback = [{"role": "system", "content": f"Aja como {nome_ai}, usando a sua personalidade sarcástica. Fale uma frase curta (entre 1 a 7 palavras) confirmando que acabou de executar o comando que o usuário pediu. Não use tags nem asteriscos."}]
             try:
-                res_fall = await asyncio.to_thread(lambda: cliente_ativo.chat.completions.create(
-                    model=id_modelo, messages=historico_fallback, temperature=0.9, extra_body=extra
-                ))
-                resposta_final = res_fall.choices[0].message.content
-                resposta_final = re.sub(r'<think>.*?</think>', '', resposta_final, flags=re.IGNORECASE | re.DOTALL)
-                resposta_final = re.sub(r'<[^>]+>', '', resposta_final).strip()
-            except:
+                res_fall = await chamada_com_tentativas(
+                    lambda: cliente_ativo.chat.completions.create(
+                        model=id_modelo, messages=historico_fallback, temperature=0.9, extra_body=extra
+                    ),
+                    o_que="confirmacao curta")
+                if res_fall is None:
+                    resposta_final = "Feito."
+                else:
+                    resposta_final = res_fall.choices[0].message.content
+                    resposta_final = re.sub(r'<think>.*?</think>', '', resposta_final, flags=re.IGNORECASE | re.DOTALL)
+                    resposta_final = re.sub(r'<[^>]+>', '', resposta_final).strip()
+            except Exception as e:
+                print(f" Erro na confirmacao curta: {e}")
                 resposta_final = "Feito."
 
         print(f"{nome_ai}: {resposta_final}")
@@ -924,7 +995,12 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         await microsoft_speak(resposta_final)
         
     except Exception as e:
-        print(f" Erro na API LLM ({provedor_local}): {e}")
+        if _e_rate_limit(e):
+            print(f" [LIMITE] A API da Groq recusou por excesso de pedidos. Tenta daqui a bocado.")
+            print(f"{nome_ai}: estou a levar com o limite de pedidos da API. Tenta daqui a bocado.")
+        else:
+            print(f" Erro na API LLM ({provedor_local}): {e}")
+            print(f"{nome_ai}: deu-me um erro a falar com a API. Tenta outra vez.")
 #endregion
 # ======================================================
 # region 🎤 MODOS DE OPERAÇÃO
