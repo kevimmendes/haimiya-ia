@@ -38,9 +38,40 @@ for _stream in (sys.stdout, sys.stderr):
 # 🧠 MODELOS DA GROQ — confirmados contra a API (client.models.list()).
 # O antigo "llama-3.3-70b-versatile" foi descontinuado e devolvia 404 model_not_found,
 # o que fazia TODA a conversa falhar. Estes foram testados a responder.
-MODELO_LLM = "openai/gpt-oss-120b"          # cerebro principal (texto)
-MODELO_VISAO = "qwen/qwen3.8-27b"           # unico desta chave que aceita imagens
+#
+# Medido nesta conta (set/2026) com o prompt real da Haimiya, temperatura 0.9:
+#   qwen/qwen3.8-27b   -> emitiu as tags 3/3, 0.52s por resposta
+#   openai/gpt-oss-120b -> emitiu as tags 1/3, 0.88s por resposta
+#   openai/gpt-oss-20b  -> emitiu as tags 1/3, 0.61s por resposta
+# Os "gpt-oss" sao modelos de RAZONAMENTO: o campo `reasoning` consome os
+# tokens e, quando o max_tokens acaba a meio do raciocinio, devolvem
+# `content` VAZIO - ou seja, a Haimiya ficava calada sem aviso.
+# Por isso o texto vai no qwen, que nao tem esse campo.
+MODELO_LLM = "qwen/qwen3.8-27b"             # cerebro principal (texto)
 MODELO_TRANSCRICAO = "whisper-large-v3-turbo"  # voz -> texto
+
+# 👁️ VISÃO:GROQ (cloud) ou LOCAL (Ollama / LM Studio)
+# Tudo pelo .env, sem mexer em codigo. O pedido de visao ja e no formato
+# aberto da OpenAI (image_url com base64), que e o mesmo que o Ollama aceita.
+#
+#   VISAO_PROVEDOR=groq      -> usa a chave GROQ_API_KEY_VISION
+#   VISAO_PROVEDOR=local     -> usa o Ollama em http://localhost:11434/v1
+#   VISAO_BASE_URL=...       -> muda se usares o LM Studio
+#   VISAO_MODELO=...         -> ex: qwen2.5vl:3b, moondream, llama3.2-vision
+#
+# Modelos locais que cabem em 16 GB de RAM sem GPU NVIDIA:
+#   qwen2.5vl:3b   ~3 GB  - melhor escolha, razoavel e leve
+#   moondream      ~2 GB  - o mais leve, so paraecrã
+#   llama3.2-vision:11b ~8 GB - pesado, so com o resto do sistema fechado
+VISAO_PROVEDOR = os.getenv("VISAO_PROVEDOR", "groq").strip().lower()
+VISAO_BASE_URL = os.getenv("VISAO_BASE_URL", "http://localhost:11434/v1").strip()
+VISAO_MODELO_PADRAO_GROQ = "qwen/qwen3.8-27b"
+VISAO_MODELO_PADRAO_LOCAL = "qwen2.5vl:3b"
+MODELO_VISAO = os.getenv("VISAO_MODELO", "").strip() or (
+    VISAO_MODELO_PADRAO_LOCAL if VISAO_PROVEDOR in ("local", "ollama", "lmstudio")
+    else VISAO_MODELO_PADRAO_GROQ
+)
+VISAO_LOCAL = VISAO_PROVEDOR in ("local", "ollama", "lmstudio")
 
 # 🔥 IMPORTAÇÃO DA INTERFACE GRÁFICA ATUALIZADA
 from Arcana.Apps.gui_handler import RemGUI
@@ -1011,11 +1042,17 @@ async def main():
     GROQ_API_KEY_LLM = os.getenv("GROQ_API_KEY_LLM")
     GROQ_API_KEY_VISION = os.getenv("GROQ_API_KEY_VISION")
 
-    # Groq é sempre obrigatória: alimenta o cérebro E a memória E a visão,
-    # independentemente de qual o provedor ativo.
-    if not GROQ_API_KEY_LLM or not GROQ_API_KEY_VISION:
-        print(" ERRO FATAL: Chaves da Groq em falta (GROQ_API_KEY_LLM / GROQ_API_KEY_VISION).")
+    # Groq alimenta o cérebro E a memória, portanto é sempre obrigatória.
+    # A VISÃO é a exceção: pode ser local (Ollama), e aí a chave da Groq
+    # deixa de ser necessária.
+    if not GROQ_API_KEY_LLM:
+        print(" ERRO FATAL: GROQ_API_KEY_LLM em falta (cerebro e memoria).")
         print(" Verifica o teu ficheiro .env!")
+        return
+
+    if not VISAO_LOCAL and not GROQ_API_KEY_VISION:
+        print(" ERRO FATAL: GROQ_API_KEY_VISION em falta e a visao esta em modo 'groq'.")
+        print(" Ou poes a chave no .env, ou mudas para VISAO_PROVEDOR=local no .env")
         return
 
     # Atualiza as variáveis do cérebro caso o usuário tenha salvo algo no painel
@@ -1044,7 +1081,19 @@ async def main():
     if NVIDIA_API_KEY:
         client_nvidia = OpenAI(api_key=NVIDIA_API_KEY, base_url="https://integrate.api.nvidia.com/v1")
     client_llm = Groq(api_key=GROQ_API_KEY_LLM)
-    client_vision = Groq(api_key=GROQ_API_KEY_VISION)
+
+    # 👁️ Visão: Groq na cloud, ou um modelo local servido pelo Ollama /
+    # LM Studio. O endpoint local é o mesmo formato aberto da OpenAI.
+    if VISAO_LOCAL:
+        client_vision = OpenAI(
+            api_key=os.getenv("VISAO_API_KEY", "ollama"),  # o Ollama ignora a chave
+            base_url=VISAO_BASE_URL,
+            timeout=180.0,   # modelo local em CPU e lento: dá mais tempo
+        )
+        print(f" 👁️  Visao LOCAL: '{MODELO_VISAO}' em {VISAO_BASE_URL}")
+    else:
+        client_vision = Groq(api_key=GROQ_API_KEY_VISION)
+        print(f" 👁️  Visao GROQ: '{MODELO_VISAO}'")
     
     voice_filter = LocalVoiceFilter()
     
