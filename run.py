@@ -27,6 +27,21 @@ from groq import Groq
 from openai import OpenAI  # Apenas para o LLM principal Kimi via NVIDIA
 from dotenv import load_dotenv
 
+# A consola do Windows usa cp1252 e rebenta com emojis (UnicodeEncodeError).
+# Passa para UTF-8 logo no arranque, antes de qualquer print.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# 🧠 MODELOS DA GROQ — confirmados contra a API (client.models.list()).
+# O antigo "llama-3.3-70b-versatile" foi descontinuado e devolvia 404 model_not_found,
+# o que fazia TODA a conversa falhar. Estes foram testados a responder.
+MODELO_LLM = "openai/gpt-oss-120b"          # cerebro principal (texto)
+MODELO_VISAO = "qwen/qwen3.8-27b"           # unico desta chave que aceita imagens
+MODELO_TRANSCRICAO = "whisper-large-v3-turbo"  # voz -> texto
+
 # 🔥 IMPORTAÇÃO DA INTERFACE GRÁFICA ATUALIZADA
 from Arcana.Apps.gui_handler import RemGUI
 
@@ -275,7 +290,7 @@ async def resumir_com_ia(client_llm, textos, comando):
     texto_junto = "\n".join(textos)
     try:
         res = await asyncio.to_thread(lambda: client_llm.chat.completions.create(
-            model="llama-3.3-70b-versatile", 
+            model=MODELO_LLM, 
             messages=[{"role": "system", "content": comando}, {"role": "user", "content": texto_junto}],
             temperature=0.3
         ))
@@ -367,14 +382,15 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <PS:forma:retangulo,100,100,400,300> - Desenhar forma (retangulo|circulo|linha)"
         prompt_completo += "\n- <PS:texto:conteudo> - Criar camada de texto"
         prompt_completo += "\n- <PS:cor:FF0000> - Definir cor de frente"
-        prompt_completo += "\n- <PS:preencher> - Preencher a seleção com a cor atual"
+        prompt_completo += "\n- <PS:preencher> - Preencher a seleção com a cor atual. Não funciona em camadas de texto."
         prompt_completo += "\n- <PS:selecionar:tudo|retangulo|nada> - Fazer uma seleção"
-        prompt_completo += "\n- <PS:efeito:blur> - Aplicar filtro (blur|nitidez|mosaico)"
+        prompt_completo += "\n- <PS:efeito:blur> - Aplicar filtro (blur|nitidez). Precisa de uma seleção ativa."
         prompt_completo += "\n- <PS:ferramenta:pincel|mover|crop> - Trocar de ferramenta"
         prompt_completo += "\n- <PS:desfazer> - Ctrl+Z"
         prompt_completo += "\n- <PS:estado> - Ver documento e layers atuais"
         prompt_completo += "\n- <PS:guardar:C:/Users/K/Imagens/trabalho.psd> - Guardar (só no final, quando o usuário disser)"
-        prompt_completo += "\n- <PS:exportar:C:/Users/K/Imagens/saida.jpg> - Exportar"
+        prompt_completo += "\n- <PS:exportar:C:/Users/K/Imagens/saida.jpg> - Exportar (.jpg/.png/.webp/.gif/.tif)"
+        prompt_completo += "\n- <PS:camada:Nome> - Escolher qual a layer ativa (para preencher/filtrar)"
         prompt_completo += "\nREGRA PS: cria o documento e as layers, NÃO guardes nem exportes sem o usuário pedir. Confirma sempre o estado antes de afirmar que ficou feito."
 
         prompt_completo += "\n\n[PRODUÇÃO MUSICAL - teoria, arranjo, mix e master]:"
@@ -443,11 +459,32 @@ def play_beep(tipo="inicio"):
 
 class LocalVoiceFilter:
     def __init__(self):
-        self.model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
+        # O silero-vad descarrega uma vez via torch.hub. Sem trust_repo, o torch
+        # pergunta interativamente "confia neste repositorio?" e bloqueia o arranque.
+        # E se falhar, a app nao pode morrer: a voz tem de continuar a funcionar.
+        self.model = None
+        try:
+            self.model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                trust_repo=True,
+            )
+        except TypeError:
+            # torch mais antigo: nao aceita trust_repo
+            try:
+                self.model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
+            except Exception as e:
+                print(f" Aviso: VAD silero-vad indisponivel ({e}). A usar deteccao por energia.")
+        except Exception as e:
+            print(f" Aviso: VAD silero-vad nao descarregou ({e}). A usar deteccao por energia.")
     
     def is_human_voice(self, audio_data, rate=16000):
         audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
         if np.max(np.abs(audio_int16)) < 300: return False
+        if self.model is None:
+            # Sem o modelo, aceita acima do limiar de energia
+            return True
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
         tensor = torch.from_numpy(audio_float32)
         with torch.no_grad():
@@ -489,7 +526,7 @@ async def whisper_transcription(audio_frames, api_key):
         final_wav = wb.read()
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     head = {"Authorization": f"Bearer {api_key}"}
-    files = {"file": ("input.wav", final_wav, "audio/wav"), "model": (None, "whisper-large-v3-turbo"), "language": (None, "pt")}
+    files = {"file": ("input.wav", final_wav, "audio/wav"), "model": (None, MODELO_TRANSCRICAO), "language": (None, "pt")}
     resp = await asyncio.to_thread(requests.post, url, headers=head, files=files)
     return resp.json().get("text", "") if resp.status_code == 200 else None
 #endregion
@@ -519,7 +556,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
             prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes.\nO usuário pediu: '{texto}'. Foque nisso."
             try:
                 res_vision = await asyncio.to_thread(lambda: client_vision.chat.completions.create(
-                    model="qwen/qwen3.6-27b",
+                    model=MODELO_VISAO,
                     messages=[{
                         "role": "user",
                         "content": [
@@ -547,10 +584,17 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
     
     if provedor_local == "nvidia":
         cliente_ativo = client_nvidia
+        # O id do modelo NVIDIA nunca foi guardado no código, por isso lê-se do cérebro.
+        # Não é adivinhado: se faltar, avisa em vez de rebentar com NameError.
+        id_modelo = modelos_config.get("nvidia_modelo")
+        if not id_modelo:
+            print(" ERRO: provedor 'nvidia' ativo, mas 'nvidia_modelo' não está definido no brain.json.")
+            print(" Adiciona  \"nvidia_modelo\": \"<id-do-modelo>\"  dentro de modelos_ativos, ou volta para Groq.")
+            return
         extra = {"chat_template_kwargs": {"thinking": False}}
     else:
         cliente_ativo = client_llm
-        id_modelo = "llama-3.3-70b-versatile"
+        id_modelo = MODELO_LLM
         extra = None
 
     try:
@@ -691,8 +735,11 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         ps.criar_documento(largura, altura, res)
                         historico_api.append({"role": "user", "content": f"[SISTEMA PS] Documento {largura}x{altura} criado."})
                     elif acao == "layer":
-                        ps.criar_layer(param or "Layer")
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Layer '{param}' criada."})
+                        ok_ps = ps.criar_layer(param or "Layer")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Layer '{param}' criada." if ok_ps else "[SISTEMA PS] NÃO foi possível criar a layer."})
+                    elif acao == "camada":
+                        ok_ps = ps.selecionar_layer(param or "")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Layer ativa agora é '{param}'." if ok_ps else f"[SISTEMA PS] Layer '{param}' não encontrada."})
                     elif acao == "forma":
                         p = (param or "retangulo,0,0,400,300").split(',')
                         tipo = p[0]
@@ -700,23 +747,23 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         y = int(p[2]) if len(p) > 2 else 0
                         l = int(p[3]) if len(p) > 3 else 400
                         a = int(p[4]) if len(p) > 4 else 300
-                        ps.forma(tipo, x, y, l, a)
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Forma '{tipo}' desenhada em ({x},{y})."})
+                        ok_ps = ps.forma(tipo, x, y, l, a)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Forma '{tipo}' desenhada em ({x},{y})." if ok_ps else f"[SISTEMA PS] Forma '{tipo}' não foi desenhada."})
                     elif acao == "texto":
-                        ps.texto(param or "Texto")
-                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Texto adicionado."})
+                        ok_ps = ps.texto(param or "Texto")
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Texto adicionado." if ok_ps else "[SISTEMA PS] Texto não adicionado."})
                     elif acao == "cor":
-                        ps.definir_cor((param or "FF0000").lstrip('#'))
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Cor #{param} definida."})
+                        ok_ps = ps.definir_cor((param or "FF0000").lstrip('#'))
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Cor #{param} definida." if ok_ps else "[SISTEMA PS] Cor inválida."})
                     elif acao == "preencher":
-                        ps.preencher()
-                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Preenchimento aplicado."})
+                        ok_ps = ps.preencher()
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Preenchimento aplicado." if ok_ps else "[SISTEMA PS] Preenchimento NÃO aplicado (confirma no log do Photoshop o motivo: camada de texto ou sem documento)."})
                     elif acao == "selecionar":
-                        ps.selecionar(param or "tudo")
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Seleção '{param}' aplicada."})
+                        ok_ps = ps.selecionar(param or "tudo")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Seleção '{param}' aplicada." if ok_ps else f"[SISTEMA PS] Seleção '{param}' não aplicada."})
                     elif acao == "efeito":
-                        ps.efeito(param or "blur")
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Efeito '{param}' aplicado."})
+                        ok_ps = ps.efeito(param or "blur")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Efeito '{param}' aplicado." if ok_ps else f"[SISTEMA PS] Efeito '{param}' NÃO aplicado (motivo no log do Photoshop)."})
                     elif acao == "ferramenta":
                         ps.ferramenta(param or "move")
                         historico_api.append({"role": "user", "content": f"[SISTEMA PS] Ferramenta '{param}' selecionada."})
@@ -730,14 +777,14 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         partes = (param or "").rsplit('.', 1)
                         caminho = partes[0] if len(partes) == 2 else param
                         formato = partes[1] if len(partes) == 2 else "psd"
-                        ps.guardar(param, formato)
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Guardado em {param}"})
+                        ok_ps = ps.guardar(param, formato)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Guardado em {param}" if ok_ps else f"[SISTEMA PS] NÃO foi possível guardar em {param}."})
                     elif acao == "exportar":
                         partes = (param or "").rsplit('.', 1)
                         caminho = partes[0] if len(partes) == 2 else param
                         formato = partes[1] if len(partes) == 2 else "jpg"
-                        ps.exportar(param, formato)
-                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Exportado para {param}"})
+                        ok_ps = ps.exportar(param, formato)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Exportado para {param}" if ok_ps else f"[SISTEMA PS] NÃO foi possível exportar para {param}."})
                     precisa_nova_resposta = True
                 except Exception as e:
                     print(f"[ERRO PS] {e}")
@@ -964,12 +1011,23 @@ async def main():
     GROQ_API_KEY_LLM = os.getenv("GROQ_API_KEY_LLM")
     GROQ_API_KEY_VISION = os.getenv("GROQ_API_KEY_VISION")
 
-    if not GROQ_API_KEY_LLM or not GROQ_API_KEY_VISION or not NVIDIA_API_KEY:
-        print(" ERRO FATAL: Chaves da Groq ou NVIDIA não encontradas. Verifica o teu ficheiro .env!")
+    # Groq é sempre obrigatória: alimenta o cérebro E a memória E a visão,
+    # independentemente de qual o provedor ativo.
+    if not GROQ_API_KEY_LLM or not GROQ_API_KEY_VISION:
+        print(" ERRO FATAL: Chaves da Groq em falta (GROQ_API_KEY_LLM / GROQ_API_KEY_VISION).")
+        print(" Verifica o teu ficheiro .env!")
         return
-    
+
     # Atualiza as variáveis do cérebro caso o usuário tenha salvo algo no painel
     brain_raw, sys_prompt, nome_ai, trigger, discord_active, modelos, vtuber_ativo = carregar_brain()
+
+    # A NVIDIA só é necessária se for o provedor ATIVO. Podes deixá-la vazia no .env.
+    if modelos.get("local") == "nvidia" and not NVIDIA_API_KEY:
+        print(" AVISO: o cérebro está configurado para 'nvidia' mas não há NVIDIA_API_KEY no .env.")
+        print(" A mudar para Groq...")
+        modelos["local"] = "groq"
+        if isinstance(brain_raw.get("modelos_ativos"), dict):
+            brain_raw["modelos_ativos"]["local"] = "groq"
 
     # 🔥 CHAMA O SCRIPT DO VTUBER SE ESTIVER ATIVADO
     if vtuber_ativo:
@@ -980,7 +1038,11 @@ async def main():
             print(f"❌ Erro ao iniciar o VTuber Overlay: {e}")
 
     # 🧠 TRÊS CLIENTES SEPARADOS (A puxar do .env)
-    client_nvidia = OpenAI(api_key=NVIDIA_API_KEY, base_url="https://integrate.api.nvidia.com/v1")
+    # A NVIDIA só é construída se houver chave; sem ela, client_nvidia fica None
+    # e nunca é usada porque o provedor ativo já foi mudado para Groq acima.
+    client_nvidia = None
+    if NVIDIA_API_KEY:
+        client_nvidia = OpenAI(api_key=NVIDIA_API_KEY, base_url="https://integrate.api.nvidia.com/v1")
     client_llm = Groq(api_key=GROQ_API_KEY_LLM)
     client_vision = Groq(api_key=GROQ_API_KEY_VISION)
     
