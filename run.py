@@ -360,6 +360,42 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <COMPUTER:status_tarefa> - Ver o progresso da tarefa"
         prompt_completo += "\nREGRA: só use estas tags quando o usuário pedir a ação de verdade. Nunca diga que já fez algo sem executado."
 
+        prompt_completo += "\n\n[PHOTOSHOP - API oficial via COM/ExtendScript]:"
+        prompt_completo += "\n- <PS:abrir> - Abrir o Photoshop"
+        prompt_completo += "\n- <PS:documento:1920,1080> - Criar documento novo (LARGxALT)"
+        prompt_completo += "\n- <PS:layer:NomeDaLayer> - Criar layer"
+        prompt_completo += "\n- <PS:forma:retangulo,100,100,400,300> - Desenhar forma (retangulo|circulo|linha)"
+        prompt_completo += "\n- <PS:texto:conteudo> - Criar camada de texto"
+        prompt_completo += "\n- <PS:cor:FF0000> - Definir cor de frente"
+        prompt_completo += "\n- <PS:preencher> - Preencher a seleção com a cor atual"
+        prompt_completo += "\n- <PS:selecionar:tudo|retangulo|nada> - Fazer uma seleção"
+        prompt_completo += "\n- <PS:efeito:blur> - Aplicar filtro (blur|nitidez|mosaico)"
+        prompt_completo += "\n- <PS:ferramenta:pincel|mover|crop> - Trocar de ferramenta"
+        prompt_completo += "\n- <PS:desfazer> - Ctrl+Z"
+        prompt_completo += "\n- <PS:estado> - Ver documento e layers atuais"
+        prompt_completo += "\n- <PS:guardar:C:/Users/K/Imagens/trabalho.psd> - Guardar (só no final, quando o usuário disser)"
+        prompt_completo += "\n- <PS:exportar:C:/Users/K/Imagens/saida.jpg> - Exportar"
+        prompt_completo += "\nREGRA PS: cria o documento e as layers, NÃO guardes nem exportes sem o usuário pedir. Confirma sempre o estado antes de afirmar que ficou feito."
+
+        prompt_completo += "\n\n[PRODUÇÃO MUSICAL - teoria, arranjo, mix e master]:"
+        prompt_completo += "\n- <MUS:escala:Am,menor> - Notas de uma escala"
+        prompt_completo += "\n- <MUS:acorde:C,menor> - Notas e qualidade de um acorde"
+        prompt_completo += "\n- <MUS:progressao:C,menor,pop> - Progressão por género"
+        prompt_completo += "\n- <MUS:estrutura:trap,140> - Estrutura de一首 com tempos".replace("一首", "uma música")
+        prompt_completo += "\n- <MUS:mix:voz|baixo|bateria|sintetizador> - Chain de mixagem por instrumento"
+        prompt_completo += "\n- <MUS:master:pop,spotify> - Chain de masterização com alvo de loudness"
+        prompt_completo += "\n- <MUS:comp:voz,3,15> - Compressor com ataque/release"
+        prompt_completo += "\n- <MUS:reverb:plate|room|hall|delay> - Configuração de reverb/delay"
+        prompt_completo += "\n- <MUS:organizar:PASTA> - Organizar samples/projetos/presets"
+        prompt_completo += "\nREGRA MUS: escreve em português claro e prático. Dá o valor concreto (dB, Hz, ms, BPM), não conselhos vagos."
+
+        prompt_completo += "\n\n[JOGOS - guias, builds, config e screenshots]:"
+        prompt_completo += "\n- <JOGO:pesquisa:Cyberpunk 2077,build> - Pesquisar (dica|guia|quest|build|item|boss|config|mod|tecnico)"
+        prompt_completo += "\n- <JOGO:ajuda:estou preso num boss em Elden Ring> - Pesquisa interpretive"
+        prompt_completo += "\n- <JOGO:correr> - Ver que jogos estão a correr"
+        prompt_completo += "\n- <JOGO:screenshot> - Analisar o ecrã de jogo com visão"
+        prompt_completo += "\nREGRA JOGO: quando o usuário travar num jogo, pesquisa na web e dá passos concretos. Não inventes soluções sem pesquisar."
+
     # Integração de Memórias
     memoria_pesquisa = carregar_memoria_pesquisa()
     if memoria_pesquisa.get("master_search_summary"):
@@ -636,7 +672,145 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     status = TOOLS_SYSTEM.get_task_status()
                     if status:
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Tarefa: {status.get('task', 'N/A')}, Progresso: {status.get('progress', '0')}%"})
-        
+
+        # 🎨 PHOTOSHOP
+        if TOOLS_SYSTEM and "<PS:" in resposta_inicial:
+            ps_match = re.search(r'<PS:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
+            if ps_match:
+                acao = ps_match.group(1).lower()
+                param = ps_match.group(2).strip() if ps_match.group(2) else None
+                ps = TOOLS_SYSTEM.photoshop
+                try:
+                    if acao == "abrir":
+                        ps.abrir()
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Photoshop aberto."})
+                    elif acao == "documento":
+                        p = (param or "1920,1080").split(',')
+                        largura = int(p[0]); altura = int(p[1]) if len(p) > 1 else 1080
+                        res = int(p[2]) if len(p) > 2 else 72
+                        ps.criar_documento(largura, altura, res)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Documento {largura}x{altura} criado."})
+                    elif acao == "layer":
+                        ps.criar_layer(param or "Layer")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Layer '{param}' criada."})
+                    elif acao == "forma":
+                        p = (param or "retangulo,0,0,400,300").split(',')
+                        tipo = p[0]
+                        x = int(p[1]) if len(p) > 1 else 0
+                        y = int(p[2]) if len(p) > 2 else 0
+                        l = int(p[3]) if len(p) > 3 else 400
+                        a = int(p[4]) if len(p) > 4 else 300
+                        ps.forma(tipo, x, y, l, a)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Forma '{tipo}' desenhada em ({x},{y})."})
+                    elif acao == "texto":
+                        ps.texto(param or "Texto")
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Texto adicionado."})
+                    elif acao == "cor":
+                        ps.definir_cor((param or "FF0000").lstrip('#'))
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Cor #{param} definida."})
+                    elif acao == "preencher":
+                        ps.preencher()
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Preenchimento aplicado."})
+                    elif acao == "selecionar":
+                        ps.selecionar(param or "tudo")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Seleção '{param}' aplicada."})
+                    elif acao == "efeito":
+                        ps.efeito(param or "blur")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Efeito '{param}' aplicado."})
+                    elif acao == "ferramenta":
+                        ps.ferramenta(param or "move")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Ferramenta '{param}' selecionada."})
+                    elif acao == "desfazer":
+                        ps.desfazer()
+                        historico_api.append({"role": "user", "content": "[SISTEMA PS] Ação desfeita."})
+                    elif acao == "estado":
+                        est = ps.estado()
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Estado real: {est}"})
+                    elif acao == "guardar":
+                        partes = (param or "").rsplit('.', 1)
+                        caminho = partes[0] if len(partes) == 2 else param
+                        formato = partes[1] if len(partes) == 2 else "psd"
+                        ps.guardar(param, formato)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Guardado em {param}"})
+                    elif acao == "exportar":
+                        partes = (param or "").rsplit('.', 1)
+                        caminho = partes[0] if len(partes) == 2 else param
+                        formato = partes[1] if len(partes) == 2 else "jpg"
+                        ps.exportar(param, formato)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA PS] Exportado para {param}"})
+                    precisa_nova_resposta = True
+                except Exception as e:
+                    print(f"[ERRO PS] {e}")
+
+        # 🎵 MUSICA
+        if TOOLS_SYSTEM and "<MUS:" in resposta_inicial:
+            mus_match = re.search(r'<MUS:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
+            if mus_match:
+                acao = mus_match.group(1).lower()
+                param = mus_match.group(2).strip() if mus_match.group(2) else None
+                mus = TOOLS_SYSTEM.music
+                try:
+                    p = (param or "").split(',')
+                    if acao == "escala":
+                        r = mus.escala(p[0] or "C", p[1] if len(p) > 1 else "menor")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "acorde":
+                        r = mus.acorde(p[0] or "C", p[1] if len(p) > 1 else "menor")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "progressao":
+                        r = mus.progressao(p[0] or "C", p[1] if len(p) > 1 else "menor", p[2] if len(p) > 2 else "pop")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "estrutura":
+                        r = mus.estrutura(p[0] or "pop", int(p[1]) if len(p) > 1 else 120)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "mix":
+                        r = mus.chain_mix(p[0] if p and p[0] else "voz")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "master":
+                        r = mus.chain_master(p[0] if p and p[0] else "pop", p[1] if len(p) > 1 else "spotify")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "comp":
+                        mus.compressor(p[0] if p and p[0] else "voz", int(p[1]) if len(p) > 1 else 3, int(p[2]) if len(p) > 2 else 15)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] Compressor aplicado: {p}"})
+                    elif acao == "reverb":
+                        r = mus.reverb_delay(p[0] if p and p[0] else "plate")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    elif acao == "organizar":
+                        r = mus.organizacao(p[0] if p and p[0] else ".")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA MUS] {r}"})
+                    precisa_nova_resposta = True
+                except Exception as e:
+                    print(f"[ERRO MUS] {e}")
+
+        # 🎮 JOGOS
+        if TOOLS_SYSTEM and "<JOGO:" in resposta_inicial:
+            jogo_match = re.search(r'<JOGO:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
+            if jogo_match:
+                acao = jogo_match.group(1).lower()
+                param = jogo_match.group(2).strip() if jogo_match.group(2) else None
+                jogos = TOOLS_SYSTEM.games
+                try:
+                    if acao == "pesquisa":
+                        p = (param or "").split(',')
+                        nome_jogo = p[0] if p and p[0] else "o jogo"
+                        topico = p[1] if len(p) > 1 else "dica"
+                        r = jogos.pesquisa(nome_jogo, topico)
+                        historico_api.append({"role": "user", "content": f"[SISTEMA JOGO] Resultados sobre {nome_jogo}:\n{r}"})
+                    elif acao == "ajuda":
+                        r = jogos.ajuda(param or "")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA JOGO] Pesquisa: {r}"})
+                    elif acao == "correr":
+                        a_correr = jogos.jogos_a_correr()
+                        lista = ", ".join(a_correr.keys()) if a_correr else "nenhum jogo detetado"
+                        historico_api.append({"role": "user", "content": f"[SISTEMA JOGO] Jogos a correr: {lista}"})
+                    elif acao == "screenshot":
+                        r = jogos.analisar_screenshot(param)
+                        if r:
+                            historico_api.append({"role": "user", "content": f"[SISTEMA JOGO] Análise do ecrã: {r[:600]}"})
+                    precisa_nova_resposta = True
+                except Exception as e:
+                    print(f"[ERRO JOGO] {e}")
+
         if precisa_nova_resposta:
             historico_api.append({"role": "user", "content": "Agora dê a sua resposta definitiva ao usuário incorporando o que aconteceu. REGRA ABSOLUTA: Fale com a sua personalidade de forma fluida. É PROIBIDO FAZER ROLEPLAY DE AÇÕES (NUNCA use asteriscos). NUNCA use a palavra 'pesquisa', não diga que buscou na web, e não mencione tags ou comandos. Aja simplesmente como se você tivesse lembrado dessa informação de cabeça."})
             

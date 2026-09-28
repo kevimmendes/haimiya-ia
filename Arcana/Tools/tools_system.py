@@ -1,18 +1,32 @@
 import json
+import os
 import re
 from Arcana.Tools.computer_control import ComputerControl
 from Arcana.Tools.file_system import FileSystem
+from Arcana.Tools.games import Games
+from Arcana.Tools.music_production import MusicProduction
+from Arcana.Tools.photoshop_integration import PhotoshopIntegration
 from Arcana.Tools.screen_vision import ScreenVision
 from Arcana.Tools.task_planner import TaskPlanner
 
 
+def _pesquisa_web(termo):
+    """Chama o motor de busca DDG ja existente no projeto (import tardio)."""
+    from Arcana.Net import search_ddg
+    return search_ddg.search_ddg(termo)
+
+
 class ToolsSystem:
-    def __init__(self, output_callback=None, vision_client=None):
+    def __init__(self, output_callback=None, vision_client=None, searcher=None):
         self.output_callback = output_callback
         self.computer = ComputerControl(output_callback)
         self.files = FileSystem(output_callback)
         self.screen = ScreenVision(output_callback, vision_client)
         self.planner = TaskPlanner()
+        self.searcher = searcher or _pesquisa_web
+        self.photoshop = PhotoshopIntegration(output_callback, self.computer)
+        self.music = MusicProduction(output_callback, self.searcher, self.files)
+        self.games = Games(output_callback, self.searcher, self.screen)
         self.enabled = True
     
     def log(self, message):
@@ -75,18 +89,24 @@ class ToolsSystem:
         if not self.enabled: return False
         return self.files.create_folder(folder_path)
     
-    def rename_file(self, old_path, new_path):
-        """Rename file - requires confirmation for security"""
+    def rename_file(self, old_path, new_path, confirmar=False):
+        """Rename file. DESTRUCTIVO: so executa se confirmar=True."""
         if not self.enabled: return False
-        # Security: ask confirmation for renaming
-        self.log(f"⚠️ Solicitando confirmação: Renomear '{os.path.basename(old_path)}' para '{os.path.basename(new_path)}'?")
+        nome = os.path.basename(old_path)
+        if not confirmar:
+            self.log(f"Atencao: confirmar renomear '{nome}' para '{os.path.basename(new_path)}'? Responde 'sim' para executar.")
+            return "AGUARDA_CONFIRMACAO"
+        self.log(f"[OK] Renomeado: {nome} -> {os.path.basename(new_path)}")
         return self.files.rename_file(old_path, new_path)
     
-    def move_file(self, source, destination):
-        """Move file - requires confirmation"""
+    def move_file(self, source, destination, confirmar=False):
+        """Move file. DESTRUCTIVO: so executa se confirmar=True."""
         if not self.enabled: return False
-        # Security: ask confirmation for moving
-        self.log(f"⚠️ Solicitando confirmação: Mover '{os.path.basename(source)}' para '{os.path.basename(destination)}'?")
+        nome = os.path.basename(source)
+        if not confirmar:
+            self.log(f"Atencao: confirmar mover '{nome}' para '{os.path.basename(destination)}'? Responde 'sim' para executar.")
+            return "AGUARDA_CONFIRMACAO"
+        self.log(f"[OK] Movido: {nome} -> {os.path.basename(destination)}")
         return self.files.move_file(source, destination)
     
     def copy_file(self, source, destination):
@@ -139,6 +159,68 @@ class ToolsSystem:
         if not self.enabled: return False
         self.planner.complete_step()
         return True
+    
+    # === PHOTOSHOP ===
+    
+    def ps_abrir(self):
+        if not self.enabled: return False
+        return self.photoshop.abrir()
+    
+    def ps_documento(self, largura=1920, altura=1080, resolucao=72, nome="Documento"):
+        if not self.enabled: return False
+        return self.photoshop.criar_documento(largura, altura, resolucao, nome)
+    
+    def ps_layer(self, nome="Layer"):
+        if not self.enabled: return False
+        return self.photoshop.criar_layer(nome)
+    
+    def ps_estado(self):
+        if not self.enabled: return None
+        return self.photoshop.estado()
+    
+    def ps_ferramenta(self, nome):
+        if not self.enabled: return False
+        return self.photoshop.ferramenta(nome)
+    
+    # === MUSICA ===
+    
+    def mus_escala(self, tonica="C", tipo="menor"):
+        if not self.enabled: return None
+        return self.music.escala(tonica, tipo)
+    
+    def mus_acorde(self, tonica="C", tipo="menor"):
+        if not self.enabled: return None
+        return self.music.acorde(tonica, tipo)
+    
+    def mus_progressao(self, tom="C", tipo="menor", genero="pop"):
+        if not self.enabled: return None
+        return self.music.progressao(tom, tipo, genero)
+    
+    def mus_estrutura(self, genero="pop", bpm=120, compasso=4):
+        if not self.enabled: return None
+        return self.music.estrutura(genero, bpm, compasso)
+    
+    def mus_mix(self, fonte="voz"):
+        if not self.enabled: return None
+        return self.music.chain_mix(fonte)
+    
+    def mus_master(self, genero="pop", plataforma="spotify"):
+        if not self.enabled: return None
+        return self.music.chain_master(genero, plataforma)
+    
+    # === JOGOS ===
+    
+    def jogos_pesquisa(self, jogo, topico="dica", contexto=""):
+        if not self.enabled: return None
+        return self.games.pesquisa(jogo, topico, contexto)
+    
+    def jogos_correr(self):
+        if not self.enabled: return {}
+        return self.games.jogos_a_correr()
+    
+    def jogos_ajuda(self, texto):
+        if not self.enabled: return None
+        return self.games.ajuda(texto)
     
     # === INTEGRATION HELPERS ===
     
