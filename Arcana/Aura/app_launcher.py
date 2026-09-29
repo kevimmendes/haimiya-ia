@@ -156,6 +156,19 @@ class AppLauncher:
         
         return None, None
 
+    def abrir_por_nome(self, nome):
+        """Abre uma app pelo nome ou alias. Devolve o mesmo texto que vai
+        para o historico, para o dispatch por tag e por tool calling
+        partilharem o mesmo caminho e a mesma mensagem de erro."""
+        app_name, target = self.find_app(nome)
+        if not app_name:
+            disponiveis = ", ".join(self.apps.keys())
+            self.log(f"❌ Não conheço a aplicação '{nome}'. Available: {disponiveis}")
+            return f"Não conheço a aplicação '{nome}'. Available: {disponiveis}"
+        if self.open_app_cmd(app_name, target):
+            return f"'{app_name}' aberto."
+        return f"Não consegui abrir '{app_name}'. O programa pode não estar instalado."
+
     def is_app_running(self, app_name):
         if app_name not in self.apps: return False
         process_names = self.apps[app_name].get('process_names', [])
