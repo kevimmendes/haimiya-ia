@@ -1,7 +1,8 @@
 import base64
 import io
-from PIL import ImageGrab
 import json
+
+from Arcana import platform_shim
 
 class ScreenVision:
     def __init__(self, output_callback=None, vision_client=None):
@@ -17,7 +18,11 @@ class ScreenVision:
     def capture_screen_b64(self):
         """Capture screen and return as base64 string"""
         try:
-            img = ImageGrab.grab()
+            img = platform_shim.capturar_ecra()
+            if img is None:
+                motivos = ", ".join(platform_shim.capturas_disponiveis())
+                self.log(f"❌ Nao foi possivel capturar o ecra: {motivos or 'erro desconhecido'}")
+                return None
             img.thumbnail((1024, 1024))
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG", quality=70)

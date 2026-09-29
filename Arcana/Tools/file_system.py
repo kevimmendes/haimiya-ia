@@ -2,6 +2,8 @@ import os
 import shutil
 from pathlib import Path
 
+from Arcana import platform_shim
+
 class FileSystem:
     def __init__(self, output_callback=None):
         self.output_callback = output_callback
@@ -110,7 +112,9 @@ class FileSystem:
         """Open a file with default application"""
         try:
             if os.path.exists(file_path):
-                os.startfile(file_path)
+                if not platform_shim.abrir_caminho(file_path):
+                    self.log(f"⚠️ Sem forma de abrir ficheiros: instala 'xdg-utils'.")
+                    return False
                 self.log(f"📄 Arquivo aberto: '{file_path}'")
                 return True
             self.log(f"⚠️ Arquivo não encontrado: '{file_path}'")
