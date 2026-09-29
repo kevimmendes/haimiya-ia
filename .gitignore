@@ -10,7 +10,10 @@ dist/
 build/
 .env
 # historico pessoal de conversas (gerado em runtime, nao deve ir para o repositorio)
-Arcana/armazen/memoria.json
+# o * apanha tambem os .corrompido que o run.py deixa de parte
+Arcana/armazen/memoria.json*
+# historico de pesquisas web: contem paginas inteiras e o que foi pesquisado
+Arcana/armazen/pesquisa_memoria.json*
 *.mp3
 *.wav
 *.log

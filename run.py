@@ -35,6 +35,20 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+def envolver_nao_confiavel(texto, fonte):
+    """Delimita conteúdo de fora e bloqueia as suas tags de ferramenta.
+
+    Passa sempre por aqui tudo o que não veio da boca do utilizador: web,
+    ecrã, disco, Discord. Registar as tags bloqueadas no log é propositado —
+    uma tentativa de injeção que desaparece em silêncio é impossível de
+    diagnosticar depois.
+    """
+    pronto, removidas = seguranca.envolver(texto, fonte)
+    if removidas:
+        print(f" [SEGURANÇA] {removidas} tag(s) de ferramenta bloqueada(s) em conteúdo não confiável ({fonte}).")
+    return pronto
+
+
 # 🧠 MODELOS DA GROQ — confirmados contra a API (client.models.list()).
 # O antigo "llama-3.3-70b-versatile" foi descontinuado e devolvia 404 model_not_found,
 # o que fazia TODA a conversa falhar. Estes foram testados a responder.
@@ -132,6 +146,7 @@ import Arcana.Net.search_ddg as search_ddg
 
 # 🔥 IMPORTAÇÃO DO SEU MÓDULO DE AUTOMAÇÃO DE APPS
 from Arcana.Aura.app_launcher import AppLauncher 
+from Arcana import seguranca
 
 # Carrega as chaves do ficheiro .env
 load_dotenv()
@@ -187,7 +202,9 @@ def abrir_gui_modelos():
         with open(BRAIN_FILE, 'r', encoding='utf-8') as f:
             mod = json.load(f).get("modelos_ativos", {"local": "nvidia", "discord": "groq"})
             var_local.set(mod.get("local", "nvidia")); var_discord.set(mod.get("discord", "groq"))
-    except: var_local.set("nvidia"); var_discord.set("groq")
+    except (json.JSONDecodeError, OSError, TypeError, AttributeError) as e:
+        print(f" [MEMÓRIA] Não li os modelos ativos de {BRAIN_FILE} ({e}). A usar os padrões.")
+        var_local.set("nvidia"); var_discord.set("groq")
 
     tk.Button(janela, text=" Salvar e Aplicar", command=salvar, bg="#89b4fa", fg="#1e1e2e", font=("Segoe UI", 10, "bold")).pack(pady=25)
     janela.attributes('-topmost', True)
@@ -302,7 +319,7 @@ def carregar_brain():
     )
     
     if tela_atual:
-        prompt += f"\n\n[CONTEXTO VISUAL ATUAL DA TELA]:\n- {tela_atual}"
+        prompt += "\n\n[CONTEXTO VISUAL ATUAL DA TELA]:\n- " + envolver_nao_confiavel(tela_atual, "descrição do ecrã")
     
     # 🔥 Retornando 7 variáveis rigorosamente na ordem correta
     return brain, prompt, nome_ai, trigger, discord_active, modelos, vtuber_ativo
@@ -335,7 +352,15 @@ def carregar_memoria():
     if not os.path.exists(MEMORIA_FILE): return {"master_summary": "", "recent_summaries": [], "mensagens": []}
     try:
         with open(MEMORIA_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return {"master_summary": "", "recent_summaries": [], "mensagens": []}
+    except (json.JSONDecodeError, OSError, TypeError) as e:
+        # Um ficheiro corrompido levava a perder toda a memória em silêncio.
+        # Guarda-o de parte para se poder recuperar à mão.
+        print(f" [MEMÓRIA] {MEMORIA_FILE} está corrompido ({e}). A sessão arranca sem memória.")
+        try:
+            os.replace(MEMORIA_FILE, MEMORIA_FILE + ".corrompido")
+        except OSError:
+            pass
+        return {"master_summary": "", "recent_summaries": [], "mensagens": []}
 
 def salvar_memoria(memoria):
     with open(MEMORIA_FILE, 'w', encoding='utf-8') as f:
@@ -345,7 +370,9 @@ def carregar_memoria_pesquisa():
     if not os.path.exists(SEARCH_MEMORY_FILE): return {"master_search_summary": "", "recent_searches": []}
     try:
         with open(SEARCH_MEMORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return {"master_search_summary": "", "recent_searches": []}
+    except (json.JSONDecodeError, OSError, TypeError) as e:
+        print(f" [MEMÓRIA] {SEARCH_MEMORY_FILE} está corrompido ({e}). A sessão arranca sem histórico de pesquisas.")
+        return {"master_search_summary": "", "recent_searches": []}
 
 async def gerenciar_memoria_pesquisa(client_llm, query, resultados):
     memoria = carregar_memoria_pesquisa()
@@ -456,6 +483,12 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <COMPUTER:status_tarefa> - Ver o progresso da tarefa"
         prompt_completo += "\nREGRA: só use estas tags quando o usuário pedir a ação de verdade. Nunca diga que já fez algo sem executado."
 
+        # O caminho ia hardcoded no prompt, o que partia noutro PC e punha o
+        # nome de utilizador do dono dentro do prompt. Configura-se no .env.
+        ps_pasta = os.getenv("PS_PASTA") or os.path.join(os.path.expanduser("~"), "Imagens")
+        ps_guardar = os.getenv("PS_GUARDAR") or os.path.join(ps_pasta, "trabalho.psd")
+        ps_exportar = os.getenv("PS_EXPORTAR") or os.path.join(ps_pasta, "saida.jpg")
+
         prompt_completo += "\n\n[PHOTOSHOP - API oficial via COM/ExtendScript]:"
         prompt_completo += "\n- <PS:abrir> - Abrir o Photoshop"
         prompt_completo += "\n- <PS:documento:1920,1080> - Criar documento novo (LARGxALT)"
@@ -469,8 +502,8 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <PS:ferramenta:pincel|mover|crop> - Trocar de ferramenta"
         prompt_completo += "\n- <PS:desfazer> - Ctrl+Z"
         prompt_completo += "\n- <PS:estado> - Ver documento e layers atuais"
-        prompt_completo += "\n- <PS:guardar:C:/Users/K/Imagens/trabalho.psd> - Guardar (só no final, quando o usuário disser)"
-        prompt_completo += "\n- <PS:exportar:C:/Users/K/Imagens/saida.jpg> - Exportar (.jpg/.png/.webp/.gif/.tif)"
+        prompt_completo += f"\n- <PS:guardar:{ps_guardar}> - Guardar (só no final, quando o usuário disser)"
+        prompt_completo += f"\n- <PS:exportar:{ps_exportar}> - Exportar (.jpg/.png/.webp/.gif/.tif)"
         prompt_completo += "\n- <PS:camada:Nome> - Escolher qual a layer ativa (para preencher/filtrar)"
         prompt_completo += "\nREGRA PS: cria o documento e as layers, NÃO guardes nem exportes sem o usuário pedir. Confirma sempre o estado antes de afirmar que ficou feito."
 
@@ -496,13 +529,13 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
     # Integração de Memórias
     memoria_pesquisa = carregar_memoria_pesquisa()
     if memoria_pesquisa.get("master_search_summary"):
-        prompt_completo += f"\n\n[CONHECIMENTO WEB ADQUIRIDO]:\n{memoria_pesquisa['master_search_summary']}"
+        prompt_completo += "\n\n[CONHECIMENTO WEB ADQUIRIDO]:\n" + envolver_nao_confiavel(memoria_pesquisa["master_search_summary"], "resumo de pesquisas web")
 
     if memoria["master_summary"]:
         prompt_completo += f"\n\n[MEMÓRIA DE LONGO PRAZO]:\n{memoria['master_summary']}"
         
     if memoria["recent_summaries"]:
-        prompt_completo += f"\n\n[ACONTECIMENTOS RECENTES]:\n" + "\n".join(memoria["recent_summaries"])
+        prompt_completo += f"\n\n[ACONTECIMENTOS RECENTES]:\n" + "\n".join(envolver_nao_confiavel(s, "resumo de acontecimentos") for s in memoria["recent_summaries"])
 
     # Construção do histórico para a API
     historico = [{"role": "system", "content": prompt_completo}]
@@ -746,7 +779,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     if msg_limpa:
                         historico_api.append({"role": "assistant", "content": msg_limpa})
                 
-                historico_api.append({"role": "user", "content": f"[SISTEMA DE BUSCA]: Resultados encontrados para '{termo}':\n{resultados_web}"})
+                historico_api.append({"role": "user", "content": f"[SISTEMA DE BUSCA]: Resultados encontrados para '{termo}':\n" + envolver_nao_confiavel(resultados_web, f"resultados web para '{termo}'")})
                 precisa_nova_resposta = True
 
         # 🔧 NOVAS FERRAMENTAS: Processar comandos de controle do PC
@@ -759,12 +792,15 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 
                 if action == "mover_mouse" and param:
                     try:
-                        parts = param.split(',')
-                        x, y = int(parts[0]), int(parts[1]) if len(parts) > 1 else (0, 0)
+                        parts = [p.strip() for p in param.split(',')]
+                        if len(parts) < 2 or not all(parts):
+                            raise ValueError("mover_mouse precisa de x,y — recebido '" + param + "'")
+                        x, y = int(parts[0]), int(parts[1])
                         TOOLS_SYSTEM.move_mouse(x, y)
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Mouse movido para ({x}, {y})"})
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f" [FERRAMENTAS] mover_mouse falhou: {e}")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA] Falhou mover o rato: {e}. A tag tinha de ser <COMPUTER:mover_mouse:x,y> com dois números inteiros."})
                 elif action == "clicar" and param:
                     try:
                         parts = param.split(',')
@@ -772,8 +808,9 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         clicks = int(parts[1]) if len(parts) > 1 else 1
                         TOOLS_SYSTEM.click(button=button, clicks=clicks)
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Clique {button} ({clicks}x) executado"})
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f" [FERRAMENTAS] clicar falhou: {e}")
+                        historico_api.append({"role": "user", "content": f"[SISTEMA] Falhou clicar: {e}. A tag era <COMPUTER:clicar:right,2>."})
                 elif action == "digitar" and param:
                     TOOLS_SYSTEM.type_text(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Texto digitado: '{param[:30]}...'"})
@@ -791,12 +828,12 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 elif action == "analisar_tela" and param:
                     analysis = TOOLS_SYSTEM.analyze_screen(param)
                     if analysis:
-                        historico_api.append({"role": "user", "content": f"[SISTEMA] Análise: {analysis[:200]}..."})
+                        historico_api.append({"role": "user", "content": "[SISTEMA] Análise: " + envolver_nao_confiavel(analysis[:200], "análise de ecrã")})
                 elif action == "listar_arquivos" and param:
                     files = TOOLS_SYSTEM.search_files(param)
                     if files:
                         file_list = '\n'.join([os.path.basename(f) for f in files[:10]])
-                        historico_api.append({"role": "user", "content": f"[SISTEMA] Arquivos encontrados:\n{file_list}"})
+                        historico_api.append({"role": "user", "content": "[SISTEMA] Arquivos encontrados:\n" + envolver_nao_confiavel(file_list, "lista de ficheiros")})
                 elif action == "abrir_pasta" and param:
                     TOOLS_SYSTEM.list_directory(param)
                     historico_api.append({"role": "user", "content": f"[SISTEMA] Listando pasta '{param}'"})
