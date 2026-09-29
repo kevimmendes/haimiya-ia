@@ -1,0 +1,42 @@
+# Haimiya IA — dependências para Linux
+#
+# NÃO instales este ficheiro no Windows. Aí usa-se o requirements.txt original.
+#
+#   pip install -r requirements-linux.txt
+#
+# As libs de sistema (X11, ALSA, tkinter) não vêm do pip.
+# Para as instalar todas de uma vez:  ./setup_linux.sh
+
+# --- cérebro, voz, memória ---
+groq
+openai
+python-dotenv
+requests
+edge-tts
+numpy
+torch
+torchaudio
+pyaudio
+pygame
+
+# --- visão e automação de ecrã ---
+Pillow
+mss
+opencv-python
+pyautogui
+pygetwindow
+psutil
+
+# --- pesquisa web ---
+ddgs
+
+# --- interface gráfica ---
+PyQt5
+
+# --- atalhos de teclado (opcional no Linux: exige privilégios) ---
+# Se a linha abaixo falhar a instalar, tudo o resto continua a funcionar.
+# Para ativar os atalhos: sudo usermod -aG input "$USER"
+keyboard
+
+# --- ausentes no requirements.txt original, mas usados no código ---
+# pygetwindow é importado em computer_control.py e não estava declarado.

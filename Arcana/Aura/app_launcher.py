@@ -5,10 +5,14 @@ import re
 import threading
 import time
 import logging
-import keyboard
-import subprocess
 import psutil
-import winsound
+
+from Arcana import platform_shim
+
+try:
+    import keyboard
+except Exception:
+    keyboard = None
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -23,7 +27,66 @@ class AppLauncher:
         # ==========================================
         # 📂 DICIONÁRIO DE APPS (LÓGICA CMD INVISÍVEL)
         # ==========================================
-        self.apps = {
+        self.apps = self._apps_windows() if platform_shim.IS_WINDOWS else self._apps_linux()
+
+    def _apps_linux(self):
+        return {
+            "bloco de notas": {
+                "target": "gnome-text-editor",
+                "fallback": "gedit",
+                "aliases": ["anotações", "notas", "editor de texto", "notepad", "escrever", "bloco"],
+                "process_names": ["gedit", "gnome-text-editor", "kate", "mousepad"],
+                "allow_multiple": True
+            },
+            "calculadora": {
+                "target": "gnome-calculator",
+                "fallback": "kcalc",
+                "aliases": ["números", "cálculo", "calculadora", "contas"],
+                "process_names": ["gnome-calculator", "kcalc", "galculator"],
+                "allow_multiple": True
+            },
+            "terminal": {
+                "target": "gnome-terminal",
+                "fallback": "xfce4-terminal",
+                "aliases": ["consola", "terminal", "linha de comandos", "shell", "bash"],
+                "process_names": ["gnome-terminal-server", "xfce4-terminal", "konsole", "xterm"],
+                "allow_multiple": True
+            },
+            "navegador": {
+                "target": "xdg-open https://www.google.com",
+                "aliases": ["google", "pesquisar", "web", "internet", "browser", "navegador", "chrome", "firefox"],
+                "process_names": ["firefox", "chrome", "chromium", "brave-browser"],
+                "allow_multiple": True
+            },
+            "youtube": {
+                "target": "xdg-open https://www.youtube.com",
+                "aliases": ["vídeos", "ver vídeo", "site do youtube", "youtube", "assistir algo"],
+                "process_names": [],
+                "allow_multiple": True
+            },
+            "ficheiros": {
+                "target": "xdg-open .",
+                "aliases": ["explorador", "pastas", "ficheiros", "gerir ficheiros", "files"],
+                "process_names": ["nautilus", "thunar", "dolphin", "nemo"],
+                "allow_multiple": True
+            },
+            "defesas": {
+                "target": "gnome-control-center",
+                "aliases": ["defesas", "segurança", "firewall", "antivirus", "rede"],
+                "process_names": [],
+                "allow_multiple": True
+            },
+            "captura de ecra": {
+                "target": "gnome-screenshot",
+                "fallback": "spectacle",
+                "aliases": ["screenshot", "captura de tela", "ecrã", "print"],
+                "process_names": [],
+                "allow_multiple": True
+            },
+        }
+
+    def _apps_windows(self):
+        return {
             "Minecraft": {
                 "target": "minecraft:",
                 "aliases": ["jogo do bloco", "jogo quadrado", "farm", "aini", "minecraft bedrock", "mine"],
@@ -127,8 +190,16 @@ class AppLauncher:
 
     def open_app_cmd(self, app_name, target):
         try:
-            subprocess.Popen(f'start {target}', shell=True)
-            return True
+            if platform_shim.lancar_comando(target):
+                return True
+
+            alternativa = self.apps.get(app_name, {}).get("fallback")
+            if alternativa and platform_shim.lancar_comando(alternativa):
+                self.log(f"ℹ️ '{app_name}' não está instalado; a usar '{alternativa}'.")
+                return True
+
+            self.log(f"❌ Não encontrei o programa para '{app_name}'. Instala-o ou edita o dicionário em app_launcher.py.")
+            return False
         except Exception as e:
             self.log(f"❌ Erro ao abrir {app_name}: {str(e)}")
             return False

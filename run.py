@@ -13,7 +13,6 @@ import requests
 import edge_tts
 import random
 import pygame
-import keyboard
 import threading
 import os
 import base64
@@ -21,11 +20,27 @@ import tkinter as tk
 import subprocess  # Adicionado
 import sys         # Adicionado
 from tkinter import ttk
-from PIL import ImageGrab
 from datetime import datetime
 from groq import Groq
 from openai import OpenAI  # Apenas para o LLM principal Kimi via NVIDIA
 from dotenv import load_dotenv
+from Arcana import platform_shim
+
+try:
+    import keyboard
+except Exception:
+    keyboard = None
+
+
+def tecla_pressionada(nome):
+    """No Linux o pacote 'keyboard' exige root. Sem ele, devolve False."""
+    if keyboard is None:
+        return False
+    try:
+        return keyboard.is_pressed(nome)
+    except Exception:
+        return False
+
 
 # A consola do Windows usa cp1252 e rebenta com emojis (UnicodeEncodeError).
 # Passa para UTF-8 logo no arranque, antes de qualquer print.
@@ -251,7 +266,11 @@ def detectar_comando_musica(texto):
 
 def capturar_tela_b64():
     try:
-        img = ImageGrab.grab()
+        img = platform_shim.capturar_ecra()
+        if img is None:
+            motivos = ", ".join(platform_shim.capturas_disponiveis())
+            print(f" Erro ao capturar ecrã: {motivos or 'ecra indisponivel'}")
+            return None
         img.thumbnail((1024, 1024))
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=70)
@@ -456,6 +475,7 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <COMPUTER:status_tarefa> - Ver o progresso da tarefa"
         prompt_completo += "\nREGRA: só use estas tags quando o usuário pedir a ação de verdade. Nunca diga que já fez algo sem executado."
 
+    if platform_shim.CAPACIDADES["photoshop"]:
         prompt_completo += "\n\n[PHOTOSHOP - API oficial via COM/ExtendScript]:"
         prompt_completo += "\n- <PS:abrir> - Abrir o Photoshop"
         prompt_completo += "\n- <PS:documento:1920,1080> - Criar documento novo (LARGxALT)"
@@ -1016,7 +1036,7 @@ async def run_modo_continuo(client_nvidia, client_llm, client_vision, sys_prompt
     frames, is_recording, silence_timer = [], False, 0
 
     while True:
-        if keyboard.is_pressed('home'): break
+        if tecla_pressionada('home'): break
 
         data = stream.read(512, exception_on_overflow=False)
         if voice_filter.is_human_voice(data):
@@ -1054,13 +1074,13 @@ async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, a
     while True:
         try:
             while True:
-                if keyboard.is_pressed('home'): return
-                if keyboard.is_pressed('right shift'):
+                if tecla_pressionada('home'): return
+                if tecla_pressionada('right shift'):
                     play_beep("inicio")
                     break
                 await asyncio.sleep(0.05)
 
-            while keyboard.is_pressed('right shift'): await asyncio.sleep(0.01)
+            while tecla_pressionada('right shift'): await asyncio.sleep(0.01)
 
             p = pyaudio.PyAudio()
             stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=CHUNK)
@@ -1071,17 +1091,17 @@ async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, a
                 data = stream.read(CHUNK, exception_on_overflow=False)
                 frames.append(data)
                 
-                if keyboard.is_pressed('home'):
+                if tecla_pressionada('home'):
                     stream.stop_stream(); stream.close(); p.terminate()
                     return
-                if keyboard.is_pressed('right shift'):
+                if tecla_pressionada('right shift'):
                     play_beep("fim")
                     break
                 await asyncio.sleep(0.001)
                 
             stream.stop_stream(); stream.close(); p.terminate()
             print(" A enviar para a IA...")
-            while keyboard.is_pressed('right shift'): await asyncio.sleep(0.01)
+            while tecla_pressionada('right shift'): await asyncio.sleep(0.01)
 
             texto = await whisper_transcription(frames, api_key_whisper)
             if texto: 
@@ -1105,14 +1125,24 @@ async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, a
 async def main():
     brain_raw, sys_prompt, nome_ai, trigger, discord_active, modelos, vtuber_ativo = carregar_brain()
 
+    print("🖥️  Ambiente:")
+    print(platform_shim.descrever_ambiente())
+    platform_shim.desativar_por_plataforma()
+    print()
+
     print(f"🎨 Iniciando Painel de Configurações em segundo plano (Pressione F4 para acessar)...")
     gui_thread = threading.Thread(target=RemGUI.iniciar_gui_loop, args=(nome_ai,), daemon=True)
     gui_thread.start()
 
     # 🔥 REGISTRANDO OS ATALHOS GLOBAIS ABSOLUTOS (AGORA APENAS UMA ÚNICA VEZ!)
-    keyboard.add_hotkey('f4', RemGUI.toggle)
-    keyboard.on_press_key('f2', toggle_visao)
-    keyboard.on_press_key('f3', toggle_gatilho) 
+    if keyboard is not None:
+        keyboard.add_hotkey('f4', RemGUI.toggle)
+        keyboard.on_press_key('f2', toggle_visao)
+        keyboard.on_press_key('f3', toggle_gatilho)
+    else:
+        print("⚠️  Atalhos F2/F3/F4 e a tecla 'home' ficam desligados.")
+        print("    No Linux o pacote 'keyboard' exige privilégios.")
+        print("    Para os ativar: sudo usermod -aG input \"$USER\" e reinicia a sessão.")
 
     NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
     GROQ_API_KEY_LLM = os.getenv("GROQ_API_KEY_LLM")
@@ -1143,12 +1173,14 @@ async def main():
             brain_raw["modelos_ativos"]["local"] = "groq"
 
     # 🔥 CHAMA O SCRIPT DO VTUBER SE ESTIVER ATIVADO
-    if vtuber_ativo:
+    if vtuber_ativo and platform_shim.CAPACIDADES["overlay_vtuber"]:
         print("🎭 Iniciando módulo VTuber Overlay em segundo plano...")
         try:
             subprocess.Popen([sys.executable, "Arcana/Net/vtuber_overlay.py"])
         except Exception as e:
             print(f"❌ Erro ao iniciar o VTuber Overlay: {e}")
+    elif vtuber_ativo:
+        print("[PLATAFORMA] VTuber Overlay ignorado: precisa de win32gui/win32ui (Windows).")
 
     # 🧠 TRÊS CLIENTES SEPARADOS (A puxar do .env)
     # A NVIDIA só é construída se houver chave; sem ela, client_nvidia fica None
