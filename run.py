@@ -239,16 +239,42 @@ def detectar_comando_musica(texto):
         
     return None
 
-def capturar_tela_b64(max_lado=1024):
+def _janela_em_foco():
+    """Caixa (x0, y0, x1, y1) da janela que esta em foco, ou None.
+
+    Para a visao e' melhor que o ecra inteiro: um print de 1366x768 encolhe
+    para 512px e o texto fica ilegivel, e o modelo acaba a inventar conteudo.
+    Se so' dermos a janela da frente, o texto fica legivel e a resposta
+    deixa de ser adivinhacao.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return None
+        r = wintypes.RECT()
+        if not u.GetWindowRect(hwnd, ctypes.byref(r)):
+            return None
+        x0, y0, x1, y1 = r.left, r.top, r.right, r.bottom
+        if x1 - x0 < 200 or y1 - y0 < 200:
+            return None   # janela minuscula: nao vale a pena
+        return (x0, y0, x1, y1)
+    except Exception:
+        return None
+
+
+def capturar_tela_b64(max_lado=1024, so_janela=False):
     """Captura o ecrã em JPEG base64.
 
     max_lado menor = menos "tokens de imagem" = resposta mais rapozinha.
-    Um modelo local em CPU (ex.: qwen2.5vl:3b no Ollama) trata ~1128 tokens
-    de imagem por cada 1024px de lado e demora ~2 minutos a descrever; com
-    640px sao ~450 tokens e fica 3 a 4 vezes mais rapido.
+    so_janela=True captura so' a janela em foco (texto legivel -> o modelo
+    deixa de inventar coisas que nao estao no ecra).
     """
     try:
-        img = ImageGrab.grab()
+        caixa = _janela_em_foco() if so_janela else None
+        img = ImageGrab.grab(bbox=caixa) if caixa else ImageGrab.grab()
         img.thumbnail((max_lado, max_lado))
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=70)
@@ -631,14 +657,23 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
     # 👁️ LÓGICA DE VISÃO
     if VISAO_HABILITADA and requer_visao(texto):
         print(" [SISTEMA] Intenção visual detetada! A analisar o ecrã com o llama...")
-        # Local = modelo pequeno na GPU: captura media e resposta curta
+        # Local = modelo pequeno: dá-lhe a janela em foco (texto legível) e
+        # pede uma resposta curta, senão inventa o que não está no ecrã.
         lado_visao = 512 if VISAO_LOCAL else 1024
         tokens_visao = 150 if VISAO_LOCAL else 1024
-        b64_img = capturar_tela_b64(lado_visao)
+        b64_img = capturar_tela_b64(lado_visao, so_janela=VISAO_LOCAL)
         if b64_img:
-            prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes.\nO usuário pediu: '{texto}'. Foque nisso."
             if VISAO_LOCAL:
-                prompt_vision += "\nResponde SEMPRE em português, no máximo 2 frases curtas."
+                # Prompt objetivo e temperatura 0: o moondream/gemma3 a
+                # temperatura alta inventava coisas que nao estavam no ecra.
+                prompt_vision = (
+                    f"Vê esta captura de ecrã e responde ao que o utilizador pede: '{texto}'.\n"
+                    "Regras: responde SEMPRE em português, no máximo 2 frases curtas; "
+                    "só menciona o que consegues ler na imagem; se não tiveres a certeza, "
+                    "diz que não tens a certeza em vez de inventar."
+                )
+            else:
+                prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes.\nO usuário pediu: '{texto}'. Foque nisso."
             try:
                 res_vision = await chamada_com_tentativas(
                     lambda: client_vision.chat.completions.create(
@@ -651,7 +686,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                             ]
                         }],
                         max_tokens=tokens_visao,
-                        temperature=0.1
+                        temperature=0.0 if VISAO_LOCAL else 0.1
                     ),
                     o_que="visao")
                 if res_vision is None:

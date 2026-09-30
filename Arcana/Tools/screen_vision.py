@@ -1,6 +1,30 @@
 import base64
 import io
+import ctypes
+from ctypes import wintypes
 from PIL import ImageGrab
+
+
+def _janela_em_foco():
+    """Caixa (x0, y0, x1, y1) da janela em foco, ou None.
+
+    Ver a janela da frente em vez do ecra inteiro deixa o texto legivel:
+    um print completo encolhe para 512px, o texto fica borrao e o modelo
+    acaba a descrever coisas que nao estao no ecra.
+    """
+    try:
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return None
+        r = wintypes.RECT()
+        if not u.GetWindowRect(hwnd, ctypes.byref(r)):
+            return None
+        if r.right - r.left < 200 or r.bottom - r.top < 200:
+            return None
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
 
 class ScreenVision:
     def __init__(self, output_callback=None, vision_client=None, vision_model=None,
@@ -23,7 +47,8 @@ class ScreenVision:
     def capture_screen_b64(self):
         """Capture screen and return as base64 string"""
         try:
-            img = ImageGrab.grab()
+            caixa = _janela_em_foco() if self.vision_local else None
+            img = ImageGrab.grab(bbox=caixa) if caixa else ImageGrab.grab()
             img.thumbnail((512, 512) if self.vision_local else (1024, 1024))
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG", quality=70)
@@ -42,13 +67,19 @@ class ScreenVision:
         if not b64_img:
             return None
         
-        prompt_vision = "Descreva a imagem. Identifique contexto, textos, ações e detalhes."
-        if user_query:
-            prompt_vision += f"\nO usuário perguntou: '{user_query}'. Foque nisso."
-        
-        prompt_vision += "\nSeja conciso e direto."
         if self.vision_local:
-            prompt_vision += "\nResponde SEMPRE em português, no máximo 2 frases curtas."
+            prompt_vision = (
+                f"Vê esta captura de ecrã e responde ao que o utilizador pede: "
+                f"'{user_query or 'o que vês aqui?'}'.\n"
+                "Regras: responde SEMPRE em português, no máximo 2 frases curtas; "
+                "só menciona o que consegues ler na imagem; se não tiveres a "
+                "certeza, diz que não tens a certeza em vez de inventar."
+            )
+        else:
+            prompt_vision = "Descreva a imagem. Identifique contexto, textos, ações e detalhes."
+            if user_query:
+                prompt_vision += f"\nO usuário perguntou: '{user_query}'. Foque nisso."
+            prompt_vision += "\nSeja conciso e direto."
         
         try:
             res = self.vision_client.chat.completions.create(
@@ -61,7 +92,7 @@ class ScreenVision:
                     ]
                 }],
                 max_tokens=150 if self.vision_local else 1024,
-                temperature=0.1
+                temperature=0.0 if self.vision_local else 0.1
             )
             
             descricao = res.choices[0].message.content
