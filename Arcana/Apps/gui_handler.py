@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 
 import tkinter as tk
 from tkinter import ttk
@@ -441,6 +442,8 @@ class RemGUI:
         # widgets ficavam sem imagem; repinta assim que aparece
         cls.janela.after(250, cls._repintar)
         print(" [GUI] Painel de controlo pronto (vidro quente).")
+        cls._comandos = queue.Queue()
+        cls._bombeia_comandos()
         cls.janela.mainloop()
 
     # ------------------------------------------------------------------
@@ -629,5 +632,61 @@ class RemGUI:
 
     @classmethod
     def toggle(cls):
-        if cls.janela:
-            cls.janela.after(0, lambda: cls.janela.deiconify() if cls.janela.state() != "normal" else cls.janela.withdraw())
+        """Mostra/esconde a janela.
+
+        Este metodo e' chamado de outra thread (o hook de teclado do F4) e o
+        Tk NAO aceita isso: o after() de outra thread e' ignorado e o F4
+        deixava de funcionar. Por isso aqui so' metemos o comando numa fila
+        que a thread do Tk vai buscar.
+        """
+        cls.na_thread_tk(cls._alternar)
+
+    @classmethod
+    def _alternar(cls):
+        if cls.janela is None:
+            return
+        try:
+            if cls.janela.state() != "normal":
+                cls.janela.deiconify()
+                # traz para a frente: sem isto a janela abre mas fica por
+                # baixo da consola e parece que "nao responde"
+                cls.janela.lift()
+                cls.janela.focus_force()
+            else:
+                cls.janela.withdraw()
+        except tk.TclError:
+            pass
+
+    @classmethod
+    def na_thread_tk(cls, func):
+        """Manda uma acao para a thread do Tk (unico sitio seguro)."""
+        if cls.janela is None:
+            return False
+        try:
+            cls._comandos.put(func)
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _bombeia_comandos(cls):
+        """Corre na thread do Tk: executa o que as outras threads pedirem."""
+        def ciclo():
+            try:
+                while True:
+                    acao = cls._comandos.get_nowait()
+                    try:
+                        acao()
+                    except Exception as e:
+                        print(f" [GUI] acao falhou: {e}")
+            except queue.Empty:
+                pass
+            if cls.janela is not None:
+                try:
+                    cls.janela.after(60, ciclo)
+                except tk.TclError:
+                    pass
+        try:
+            cls.janela.after(60, ciclo)
+        except tk.TclError:
+            pass
