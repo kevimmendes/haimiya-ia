@@ -110,11 +110,18 @@ class AppLauncher:
 
     def close_app(self, app_name):
         try:
+            if app_name not in self.apps:
+                self.log(f"❌ Erro ao fechar {app_name}: aplicativo desconhecido")
+                return False
+            process_names = self.apps[app_name].get('process_names', [])
+            if not process_names:
+                self.log(f"ℹ️ Info: '{app_name}' não tem processos configurados, não é possível encerrá-lo.")
+                return False
             closed = False
             for proc in psutil.process_iter(['name']):
                 try:
                     proc_name = proc.info['name'].lower()
-                    for target_name in self.apps[app_name].get('process_names', []):
+                    for target_name in process_names:
                         if target_name.lower() in proc_name:
                             proc.terminate()
                             closed = True
@@ -215,11 +222,15 @@ class AppLauncher:
                         resultados.append(f"❌ Erro crítico: Falha ao tentar abrir o '{app_name}'.")
 
             elif action == "fechar":
-                if not is_running and self.apps[app_name].get('process_names'):
+                if not self.apps[app_name].get('process_names'):
+                    # Antes caia em 'Erro critico' mesmo sem haver erro.
+                    info_msg = f"ℹ️ Info: '{app_name}' não tem processos configurados, por isso não pode ser encerrado por aqui."
+                    self.log(f"ℹ️ [Sistema] {info_msg}")
+                    resultados.append(info_msg)
+                elif not is_running:
                     info_msg = f"ℹ️ Info: O aplicativo '{app_name}' já estava fechado."
                     self.log(f"ℹ️ [Sistema] {info_msg}")
                     resultados.append(info_msg)
-                
                 elif self.close_app(app_name):
                     sucesso_msg = f"✅ Sucesso: O aplicativo '{app_name}' foi encerrado com sucesso."
                     self.log(sucesso_msg)

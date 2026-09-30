@@ -17,11 +17,11 @@ def _pesquisa_web(termo):
 
 
 class ToolsSystem:
-    def __init__(self, output_callback=None, vision_client=None, searcher=None):
+    def __init__(self, output_callback=None, vision_client=None, searcher=None, vision_model=None):
         self.output_callback = output_callback
         self.computer = ComputerControl(output_callback)
         self.files = FileSystem(output_callback)
-        self.screen = ScreenVision(output_callback, vision_client)
+        self.screen = ScreenVision(output_callback, vision_client, vision_model)
         self.planner = TaskPlanner()
         self.searcher = searcher or _pesquisa_web
         self.photoshop = PhotoshopIntegration(output_callback, self.computer)
@@ -93,21 +93,28 @@ class ToolsSystem:
         """Rename file. DESTRUCTIVO: so executa se confirmar=True."""
         if not self.enabled: return False
         nome = os.path.basename(old_path)
+        destino = os.path.dirname(new_path) or "(pasta atual)"
         if not confirmar:
-            self.log(f"Atencao: confirmar renomear '{nome}' para '{os.path.basename(new_path)}'? Responde 'sim' para executar.")
+            self.log(f"Atencao: confirmar renomear '{nome}' de '{destino}' para '{os.path.basename(new_path)}'? Responde 'sim' para executar.")
             return "AGUARDA_CONFIRMACAO"
-        self.log(f"[OK] Renomeado: {nome} -> {os.path.basename(new_path)}")
-        return self.files.rename_file(old_path, new_path)
+        ok = self.files.rename_file(old_path, new_path)
+        # So confirma depois de executar: antes escrevia [OK] mesmo em falha.
+        if ok:
+            self.log(f"[OK] Renomeado: {nome} -> {os.path.basename(new_path)}")
+        return ok
     
     def move_file(self, source, destination, confirmar=False):
         """Move file. DESTRUCTIVO: so executa se confirmar=True."""
         if not self.enabled: return False
         nome = os.path.basename(source)
+        destino = os.path.dirname(destination) or "(pasta atual)"
         if not confirmar:
-            self.log(f"Atencao: confirmar mover '{nome}' para '{os.path.basename(destination)}'? Responde 'sim' para executar.")
+            self.log(f"Atencao: confirmar mover '{nome}' de '{os.path.dirname(source) or '(pasta atual)'}' para '{destino}'? Responde 'sim' para executar.")
             return "AGUARDA_CONFIRMACAO"
-        self.log(f"[OK] Movido: {nome} -> {os.path.basename(destination)}")
-        return self.files.move_file(source, destination)
+        ok = self.files.move_file(source, destination)
+        if ok:
+            self.log(f"[OK] Movido: {nome} -> {destino}")
+        return ok
     
     def copy_file(self, source, destination):
         """Copy file"""

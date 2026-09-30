@@ -4,9 +4,12 @@ from PIL import ImageGrab
 import json
 
 class ScreenVision:
-    def __init__(self, output_callback=None, vision_client=None):
+    def __init__(self, output_callback=None, vision_client=None, vision_model=None):
         self.output_callback = output_callback
         self.vision_client = vision_client
+        # Sem modelo definido nao ha como chamar a API: assume-se o mesmo
+        # modelo de texto, que e o que o run.py configura por omissao.
+        self.vision_model = vision_model or "qwen/qwen3.8-27b"
     
     def log(self, message):
         if self.output_callback:
@@ -44,7 +47,7 @@ class ScreenVision:
         
         try:
             res = self.vision_client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
+                model=self.vision_model,
                 messages=[{
                     "role": "user",
                     "content": [

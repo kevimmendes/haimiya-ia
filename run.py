@@ -11,16 +11,13 @@ import numpy as np
 import pyaudio
 import requests
 import edge_tts
-import random
 import pygame
 import keyboard
 import threading
 import os
 import base64
-import tkinter as tk
 import subprocess  # Adicionado
 import sys         # Adicionado
-from tkinter import ttk
 from PIL import ImageGrab
 from datetime import datetime
 from groq import Groq
@@ -157,41 +154,14 @@ CONTADOR_VISAO = 0       # Contador para limpar a memória visual
 TOOLS_SYSTEM = None
 
 def abrir_gui_modelos():
-    def salvar():
-        if os.path.exists(BRAIN_FILE):
-            with open(BRAIN_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
-            data["modelos_ativos"] = {"local": var_local.get(), "discord": var_discord.get()}
-            with open(BRAIN_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
-        print(f"\n [SISTEMA] Cérebro atualizado! Local: {var_local.get().upper()} | Discord: {var_discord.get().upper()}")
-        janela.destroy()
-
-    janela = tk.Tk()
-    janela.title("Painel de Controle IA - Rem")
-    janela.geometry("400x320")
-    janela.configure(bg="#1e1e2e")
-    style = ttk.Style()
-    style.configure("TLabel", background="#1e1e2e", foreground="#cdd6f4", font=("Segoe UI", 11))
-    style.configure("TRadiobutton", background="#1e1e2e", foreground="#a6adc8", font=("Segoe UI", 10))
-
-    ttk.Label(janela, text=" Cérebro Principal (Local):", font=("Segoe UI", 12, "bold"), foreground="#f38ba8").pack(pady=(15, 5))
-    var_local = tk.StringVar()
-    ttk.Radiobutton(janela, text="NVIDIA (Kimi 2.5)", variable=var_local, value="nvidia").pack()
-    ttk.Radiobutton(janela, text="GROQ (Scout 17b)", variable=var_local, value="groq").pack()
-
-    ttk.Label(janela, text=" Cérebro do Discord:", font=("Segoe UI", 12, "bold"), foreground="#a6e3a1").pack(pady=(20, 5))
-    var_discord = tk.StringVar()
-    ttk.Radiobutton(janela, text="NVIDIA (Kimi 2.5)", variable=var_discord, value="nvidia").pack()
-    ttk.Radiobutton(janela, text="GROQ (Scout 17b)", variable=var_discord, value="groq").pack()
-
-    try:
-        with open(BRAIN_FILE, 'r', encoding='utf-8') as f:
-            mod = json.load(f).get("modelos_ativos", {"local": "nvidia", "discord": "groq"})
-            var_local.set(mod.get("local", "nvidia")); var_discord.set(mod.get("discord", "groq"))
-    except: var_local.set("nvidia"); var_discord.set("groq")
-
-    tk.Button(janela, text=" Salvar e Aplicar", command=salvar, bg="#89b4fa", fg="#1e1e2e", font=("Segoe UI", 10, "bold")).pack(pady=25)
-    janela.attributes('-topmost', True)
-    janela.mainloop()
+    """Abre o painel de controlo unico da Haimiya (o mesmo do F4).
+    Antes a opcao 5 do menu abria uma segunda janela, 'Painel de Controle
+    IA - Rem', que duplicava a escolha de modelo e ainda usava a paleta
+    antiga azul/verde. Passou a ser o mesmo painel, com o mesmo aspeto."""
+    if RemGUI.janela is not None:
+        RemGUI.toggle()
+    else:
+        RemGUI.iniciar_gui_loop()
 #endregion
 # ======================================================
 #region 👁️ VISÃO COMPUTACIONAL E INJETORES
@@ -215,7 +185,8 @@ def toggle_gatilho(e):
             play_beep("inicio" if novo_estado else "fim")
             print(f"\n[SISTEMA] 🎤 Gatilho de Voz (F3): {'LIGADO' if novo_estado else 'DESLIGADO'}")
         except Exception as ex:
-            pass
+            # Antes falhava em silencio: o F3 parecia funcionar e nada acontecia.
+            print(f"\n[SISTEMA] Erro ao alternar o gatilho de voz: {ex}")
 
 def requer_visao(texto):
     texto_min = texto.lower()
@@ -411,7 +382,7 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     # 🔥 INJETOR DE AUTORIDADE E CAPACIDADES CRÍTICAS 🔥
-    prompt_completo = sys_prompt + f"\n\n[SISTEMA DE CAPACIDADES MÁXIMAS]:"
+    prompt_completo = sys_prompt + "\n\n[SISTEMA DE CAPACIDADES MÁXIMAS]:"
     prompt_completo += "\n1. CONTROLO DE MÚSICA: Você É o bot de música. Nunca diga que não pode tocar. Use OBRIGATORIAMENTE a tag <PLAY:pedido> para tocar qualquer coisa no Discord."
     prompt_completo += "\n2. CONTROLO DO PC: Você tem acesso total ao PC do Nero. Use <APP:abrir:alvo> ou <APP:fechar:alvo> para comandar o computador. Não invente que é apenas uma IA de texto."
     prompt_completo += "\n3. BUSCA WEB: Use [PESQUISAR: termo] para ler notícias e dados atuais. Você é conectada à internet."
@@ -425,7 +396,7 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
     
     if launcher and hasattr(launcher, 'obter_nomes_dos_apps'):
         nomes_apps = launcher.obter_nomes_dos_apps()
-        prompt_completo += f"\n\n[INTEGRAÇÃO COM O COMPUTADOR]:"
+        prompt_completo += "\n\n[INTEGRAÇÃO COM O COMPUTADOR]:"
         prompt_completo += f"\n📂 APLICATIVOS INSTALADOS: {nomes_apps}."
         prompt_completo += "\nPara abrir ou pesquisar no navegador/youtube, use: <APP:abrir:alvo:termo_de_busca>."
         
@@ -502,7 +473,7 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += f"\n\n[MEMÓRIA DE LONGO PRAZO]:\n{memoria['master_summary']}"
         
     if memoria["recent_summaries"]:
-        prompt_completo += f"\n\n[ACONTECIMENTOS RECENTES]:\n" + "\n".join(memoria["recent_summaries"])
+        prompt_completo += "\n\n[ACONTECIMENTOS RECENTES]:\n" + "\n".join(memoria["recent_summaries"])
 
     # Construção do histórico para a API
     historico = [{"role": "system", "content": prompt_completo}]
@@ -536,7 +507,9 @@ def play_beep(tipo="inicio"):
         sound = pygame.sndarray.make_sound(stereo_array)
         sound.play()
     except Exception as e:
-        pass
+        # O beep e' cosmetico: nao vale a pena travar a app, mas nao e' um
+        # erro silencioso se o pygame falhar.
+        print(f"[AVISO] Beep de confirmacao falhou: {e}")
 
 class LocalVoiceFilter:
     def __init__(self):
@@ -653,7 +626,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 if res_vision is None:
                     raise RuntimeError("limite de pedidos na visao")
                 descricao_imagem = res_vision.choices[0].message.content
-                print(f" [ANÁLISE SCOUT CONCLUÍDA]")
+                print(" [ANÁLISE SCOUT CONCLUÍDA]")
 
                 salvar_visao_brain(descricao_imagem)
                 _, sys_prompt_atualizado, _, _, _, _, *_ = carregar_brain()
@@ -866,13 +839,11 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         historico_api.append({"role": "user", "content": f"[SISTEMA PS] Estado real: {est}"})
                     elif acao == "guardar":
                         partes = (param or "").rsplit('.', 1)
-                        caminho = partes[0] if len(partes) == 2 else param
                         formato = partes[1] if len(partes) == 2 else "psd"
                         ok_ps = ps.guardar(param, formato)
                         historico_api.append({"role": "user", "content": f"[SISTEMA PS] Guardado em {param}" if ok_ps else f"[SISTEMA PS] NÃO foi possível guardar em {param}."})
                     elif acao == "exportar":
                         partes = (param or "").rsplit('.', 1)
-                        caminho = partes[0] if len(partes) == 2 else param
                         formato = partes[1] if len(partes) == 2 else "jpg"
                         ok_ps = ps.exportar(param, formato)
                         historico_api.append({"role": "user", "content": f"[SISTEMA PS] Exportado para {param}" if ok_ps else f"[SISTEMA PS] NÃO foi possível exportar para {param}."})
@@ -996,7 +967,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         
     except Exception as e:
         if _e_rate_limit(e):
-            print(f" [LIMITE] A API da Groq recusou por excesso de pedidos. Tenta daqui a bocado.")
+            print(" [LIMITE] A API da Groq recusou por excesso de pedidos. Tenta daqui a bocado.")
             print(f"{nome_ai}: estou a levar com o limite de pedidos da API. Tenta daqui a bocado.")
         else:
             print(f" Erro na API LLM ({provedor_local}): {e}")
@@ -1105,7 +1076,7 @@ async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, a
 async def main():
     brain_raw, sys_prompt, nome_ai, trigger, discord_active, modelos, vtuber_ativo = carregar_brain()
 
-    print(f"🎨 Iniciando Painel de Configurações em segundo plano (Pressione F4 para acessar)...")
+    print("🎨 Iniciando Painel de Configurações em segundo plano (Pressione F4 para acessar)...")
     gui_thread = threading.Thread(target=RemGUI.iniciar_gui_loop, args=(nome_ai,), daemon=True)
     gui_thread.start()
 
@@ -1182,7 +1153,7 @@ async def main():
 
     # 🔥 INICIA O SISTEMA DE FERRAMENTAS
     global TOOLS_SYSTEM
-    TOOLS_SYSTEM = ToolsSystem(output_callback=print, vision_client=client_vision)
+    TOOLS_SYSTEM = ToolsSystem(output_callback=print, vision_client=client_vision, vision_model=MODELO_VISAO)
 
     carregar_memoria()
     
@@ -1220,13 +1191,13 @@ async def main():
             discord_active = not discord_active
             salvar_discord_brain(discord_active)
             if discord_active:
-                print(f"\n [SISTEMA] Discord foi LIGADO e salvo na memória.")
+                print("\n [SISTEMA] Discord foi LIGADO e salvo na memória.")
                 if discord_thread is None or not discord_thread.is_alive():
                     print("🌐 Despertando a Rem no Discord...")
 #                   discord_thread = threading.Thread(target=run_discord_bot, daemon=True)
 #                    discord_thread.start()
             else:
-                print(f"\n [SISTEMA] Discord foi DESLIGADO (A ligação ao servidor será encerrada no próximo reinício do script).")
+                print("\n [SISTEMA] Discord foi DESLIGADO (A ligação ao servidor será encerrada no próximo reinício do script).")
         elif op == '5':
             await asyncio.to_thread(abrir_gui_modelos)
         

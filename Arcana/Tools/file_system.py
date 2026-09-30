@@ -82,9 +82,7 @@ class FileSystem:
         """Move a file to a destination"""
         try:
             # Ensure destination directory exists
-            dest_dir = os.path.dirname(destination)
-            os.makedirs(dest_dir, exist_ok=True)
-            
+            self._garantir_pasta(destination)
             shutil.move(source, destination)
             self.log(f"📤 Arquivo movido: '{source}' -> '{destination}'")
             return True
@@ -95,15 +93,21 @@ class FileSystem:
     def copy_file(self, source, destination):
         """Copy a file to a destination"""
         try:
-            dest_dir = os.path.dirname(destination)
-            os.makedirs(dest_dir, exist_ok=True)
-            
+            self._garantir_pasta(destination)
             shutil.copy2(source, destination)
             self.log(f"📋 Arquivo copiado: '{source}' -> '{destination}'")
             return True
         except Exception as e:
             self.log(f"❌ Erro ao copiar arquivo: {e}")
             return False
+    
+    @staticmethod
+    def _garantir_pasta(destino):
+        """Cria a pasta de destino. Se o destino for so um nome de ficheiro
+        (sem diretorio) o dirname devolve '' e o makedirs rebentava."""
+        dest_dir = os.path.dirname(destino)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
     
     # File operations
     def open_file(self, file_path):

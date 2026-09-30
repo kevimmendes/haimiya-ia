@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 
 
@@ -114,33 +115,153 @@ class PhotoshopIntegration:
     # ======================================================
     # PONTE ExtendScript
     # ======================================================
+
+    @staticmethod
+    def _alerta_ps():
+        """Procura o alerta modal do Photoshop (janela PSDialogBox) e carrega
+        no botao de confirmacao.
+
+        Um alerta destes bloqueia o COM para SEMPRE: o DoJavaScript so'
+        volta quando alguem carrega em OK. Devolve o texto do alerta que se
+        desbloqueou, ou None se nao havia nada.
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            import psutil
+
+            pid = None
+            for p in psutil.process_iter(["name", "pid"]):
+                if "photoshop" in (p.info["name"] or "").lower():
+                    pid = p.info["pid"]
+                    break
+            if not pid:
+                return None
+
+            u = ctypes.windll.user32
+            EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND,
+                                          wintypes.LPARAM)
+            janelas = []
+
+            def ver(hwnd, _):
+                dono = wintypes.DWORD()
+                u.GetWindowThreadProcessId(hwnd, ctypes.byref(dono))
+                if dono.value == pid:
+                    cls = ctypes.create_unicode_buffer(64)
+                    u.GetClassNameW(hwnd, cls, 64)
+                    if cls.value == "PSDialogBox":
+                        janelas.append(hwnd)
+                return True
+
+            u.EnumWindows(EnumProc(ver), 0)
+            if not janelas:
+                return None
+
+            texto, alvo = None, None
+            for h in janelas:
+                filhos = []
+
+                def ler(ch, _):
+                    n = ctypes.create_unicode_buffer(1024)
+                    u.GetWindowTextW(ch, n, 1024)
+                    if n.value.strip():
+                        filhos.append((ch, n.value.strip()))
+                    return True
+
+                u.EnumChildWindows(h, EnumProc(ler), 0)
+                for ch, t in filhos:
+                    alta = t.upper()
+                    if alta in ("OK", "SIM", "YES", "S", "ENTRAR", "CONTINUAR"):
+                        alvo = alvo or ch
+                    elif alta in ("CANCELAR", "CANCEL", "NAO", "NÃO", "NO"):
+                        alvo = alvo or ch
+                    elif t != "Adobe Photoshop":
+                        texto = t  # frase do alerta
+            if alvo:
+                u.SendMessageW(alvo, 0x00F5, 0, 0)  # BM_CLICK
+                return texto or "(alerta sem texto)"
+            return None
+        except Exception:
+            return None
+
+    def _do_js(self, codigo):
+        """DoJavaScript no fio principal, com um vigia de alertas a correr
+        em paralelo. Devolve (estado, valor)."""
+        parar = threading.Event()
+
+        def vigiar():
+            # enquanto o script corre, se o Photoshop abrir um alerta
+            # modal este fio carrega em OK: senao o DoJavaScript fica'
+            # bloqueado para sempre a espera do utilizador.
+            while not parar.wait(0.5):
+                texto = self._alerta_ps()
+                if texto:
+                    self.log(f"[PS] Alerta do Photoshop desbloqueado: {texto}")
+
+        fio = threading.Thread(target=vigiar, daemon=True)
+        fio.start()
+        try:
+            return "ok", self._app.DoJavaScript(codigo)
+        except Exception as e:
+            return "erro", e
+        finally:
+            parar.set()
+
+    @staticmethod
+    def _limpar_erro(msg):
+        """Tira o preambulo generico do Photoshop e fica' so' com a frase.
+
+        O erro chega muitas vezes como repr de tupla com \\n escapados,
+        por isso trata os dois formatos.
+        """
+        texto = str(msg)
+        for sep in ("\n- ", "\\n- "):
+            if sep in texto:
+                texto = texto.split(sep, 1)[1]
+                break
+        for sep in ("\\r\\n", "\\n", "\r\n", "\n", "\r"):
+            texto = texto.replace(sep, " ")
+        return " ".join(texto.split())[:200] or str(msg)[:200]
+
     def js(self, codigo, fallback_ui=None):
         """Corre ExtendScript dentro do Photoshop. Cai para UI se o COM falhar.
 
-        O Photoshop responde 'aplicativo ocupado' enquanto processa (filtros,
-        guardar, abrir documentos). Nesses casos faz-se retry, senao a app
-        recebe um erro que nao e do script.
+        Duas proteccoes apuradas a rodar (sem elas a app trava para sempre):
+        1. DialogModes.NO em TODOS os scripts: sem isto o Photoshop abre
+           alertas modais (ex.: "Desfoque Gaussiano... area selecionada
+           vazia") e o DoJavaScript so' volta quando alguem carrega em OK.
+           Com DialogModes.NO o mesmo erro vem como excecao JS e e'
+           tratado como qualquer outro erro.
+        2. Vigia de alertas: um fio em paralelo vigia as janelas PSDialogBox
+           do Photoshop e carrega em OK, para que nenhum dialogo que escape
+           ao DialogModes.NO consiga bloquear a app.
         """
         if self.ligar():
+            script = "app.displayDialogs = DialogModes.NO; " + codigo
             ultimo = None
             for tentativa in range(12):
-                try:
-                    return self._app.DoJavaScript(codigo)
-                except Exception as e:
-                    ultimo = e
-                    msg = str(e)
-                    ocupado = ("ocupado" in msg or "-2147417846" in msg
-                               or "-2147418111" in msg or "RETRY" in msg.upper())
-                    if ocupado:
-                        try:
-                            import pythoncom
-                            pythoncom.PumpWaitingMessages()
-                        except Exception:
-                            pass
-                        time.sleep(0.4)
-                        continue
-                    self.log(f"[PS] ExtendScript falhou: {str(e)[:200]}")
-                    break
+                estado, val = self._do_js(script)
+                if estado == "ok":
+                    return val
+                ultimo = val
+                msg = str(val)
+                ocupado = ("ocupado" in msg or "-2147417846" in msg
+                           or "-2147418111" in msg or "RETRY" in msg.upper())
+                if ocupado:
+                    try:
+                        import pythoncom
+                        pythoncom.PumpWaitingMessages()
+                    except Exception:
+                        pass
+                    time.sleep(0.4)
+                    continue
+                self.log(f"[PS] ExtendScript falhou: {self._limpar_erro(msg)}")
+                ultimo = None  # ja' registado; so' o fim das 12 tentativas avisa
+                break
+            if ultimo is not None:
+                # Antes o erro final era descartado e a app ficava muda.
+                self.log(f"[PS] Photoshop continuou ocupado apos 12 tentativas: "
+                         f"{self._limpar_erro(ultimo)}")
         if fallback_ui and self.computer:
             try:
                 return fallback_ui()
@@ -346,11 +467,30 @@ class PhotoshopIntegration:
             pts = f'd.selection.select([[{x + largura / 2},{y}],[{x + largura},{y + altura}],[{x},{y + altura}]]);'
             nome_tipo = "triangulo"
         elif t in ("retangulo_arredondado", "arredondado") and int(cantos) > 0:
-            # cantos arredondados aproximados cortando os quinao
-            r = min(int(cantos), largura // 2, altura // 2)
-            pts = (f'd.selection.select([[{x},{y}],[{x + largura},{y}],[{x + largura},{y + altura}],'
-                   f'[{x},{y + altura}]]);')
-            nome_tipo = "retangulo"
+            # Cantos arredondados de verdade: 4 arcos de 8 segmentos, forming
+            # um poligono fechado. Antes isto ignorava o raio e devolvia um
+            # retangulo normal sem avisar.
+            raio = min(int(cantos), largura // 2, altura // 2)
+            seg = 8
+            # (x do canto, y do canto, sinal do centro em x, sinal em y, angulo inicial)
+            cantos_arco = [
+                (x, y, "+", "+", "Math.PI"),
+                (x + largura, y, "-", "+", "-Math.PI / 2"),
+                (x + largura, y + altura, "-", "-", "0"),
+                (x, y + altura, "+", "-", "Math.PI / 2"),
+            ]
+            corpo = "var pts = []; "
+            for cx0, cy0, sx, sy, ang in cantos_arco:
+                centro_x = f"{cx0} + {raio}" if sx == "+" else f"{cx0} - {raio}"
+                centro_y = f"{cy0} + {raio}" if sy == "+" else f"{cy0} - {raio}"
+                corpo += (
+                    f'for (var i = 0; i <= {seg}; i++) {{ '
+                    f'var a = {ang} + i * (Math.PI / 2) / {seg}; '
+                    f'pts.push([{centro_x} + {raio} * Math.cos(a), '
+                    f'{centro_y} + {raio} * Math.sin(a)]); }} '
+                )
+            pts = corpo + "d.selection.select(pts);"
+            nome_tipo = "retangulo_arredondado"
         else:
             pts = (f'd.selection.select([[{x},{y}],[{x + largura},{y}],'
                    f'[{x + largura},{y + altura}],[{x},{y + altura}]]);')
@@ -539,12 +679,35 @@ class PhotoshopIntegration:
             res = self.js(
                 'var r = ""; '
                 'if (app.documents.length < 1) { r = "sem documento"; } else { '
-                'var b = app.activeDocument.selection.bounds; '
-                'r = (b[2] > b[0] && b[3] > b[1]) ? "sim" : "nao"; } r;'
+                # sem selecao, selection.bounds lanca Erro 1302 e o erro
+                # sai do script a entupir os logs: apanhamos dentro do JS
+                'try { var b = app.activeDocument.selection.bounds; '
+                'r = (b[2] > b[0] && b[3] > b[1]) ? "sim" : "nao"; } '
+                'catch (e) { r = "nao"; } } r;'
             )
             return res == "sim"
         except Exception:
             return True  # nao sabemos -> deixa tentar
+
+    def _layer_vazia(self):
+        """True se a layer ativa nao tem nenhum pixel (bounds zero).
+
+        Sem isto o Photoshop responde com um ALERTA MODAL do tipo "nao foi
+        possivel completar o Desfoque Gaussiano porque a area selecionada
+        esta' vazia" mesmo com a selecao toda preenchida - a camada e' que
+        esta' vazia. Com DialogModes.NO o mesmo erro vem por excecao, mas
+        avisamos primeiro com uma frase que se percebe.
+        """
+        try:
+            res = self.js(
+                'var r = ""; '
+                'if (app.documents.length < 1) { r = "sem documento"; } else { '
+                'var b = app.activeDocument.activeLayer.bounds; '
+                'r = ((b[2] - b[0]) <= 0 && (b[3] - b[1]) <= 0) ? "vazia" : "cheia"; } r;'
+            )
+            return res == "vazia"
+        except Exception:
+            return False
 
     def efeito(self, nome, intensidade=50):
         """Aplica filtro na layer ativa.
@@ -570,6 +733,10 @@ class PhotoshopIntegration:
             return False
         if alvo == "layer de texto":
             self.log("[PS] Nao apliquei o filtro a uma layer de texto. Escolhe a layer de conteudo.")
+            return False
+        if alvo == "ok" and self._layer_vazia():
+            self.log("[PS] Nao apliquei o filtro: a layer ativa esta' vazia "
+                     "(nao tem pixels nesse ponto). Desenha ou preenche antes.")
             return False
         if not self._tem_selecao():
             self.log("[PS] Nao apliquei o filtro: nao ha nada selecionado. "
