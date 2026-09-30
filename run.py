@@ -32,6 +32,12 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# O .env tem de ser lido ANTES de qualquer os.getenv. A configuracao da visao
+# (logo abaixo) le VISAO_PROVEDOR/VISAO_MODELO: se o load_dotenv() ficar mais
+# abaixo no ficheiro, essas variaveis sao lidas vazias e a visao local
+# nunca liga, mesmo com tudo escrito no .env.
+load_dotenv()
+
 # 🧠 MODELOS DA GROQ — confirmados contra a API (client.models.list()).
 # O antigo "llama-3.3-70b-versatile" foi descontinuado e devolvia 404 model_not_found,
 # o que fazia TODA a conversa falhar. Estes foram testados a responder.
@@ -131,7 +137,7 @@ import Arcana.Net.search_ddg as search_ddg
 from Arcana.Aura.app_launcher import AppLauncher 
 
 # Carrega as chaves do ficheiro .env
-load_dotenv()
+# (o load_dotenv() ja correu no topo do ficheiro, ANTES da configuracao da visao)
 GROQ_API_KEY_LLM = os.getenv("GROQ_API_KEY_LLM")
 GROQ_API_KEY_VISION = os.getenv("GROQ_API_KEY_VISION")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY") # Chave da NVIDIA
@@ -147,7 +153,9 @@ BRAIN_FILE = "Arcana/armazen/brain.json"
 MEMORIA_FILE = "Arcana/armazen/memoria.json"
 SEARCH_MEMORY_FILE = "Arcana/armazen/pesquisa_memoria.json" 
 
-VISAO_HABILITADA = False # Controlo global do F2
+# Comeca LIGADA: a visao so' e' desligada se carregares F2. Antes comecava
+# desligada e a Haimiya respondia "nao vejo" sem nunca tentar.
+VISAO_HABILITADA = True  # Controlo global do F2
 CONTADOR_VISAO = 0       # Contador para limpar a memória visual
 
 # 🔥 SISTEMA DE FERRAMENTAS (global, como VISAO_HABILITADA - inicializado no main)
@@ -189,9 +197,20 @@ def toggle_gatilho(e):
             print(f"\n[SISTEMA] Erro ao alternar o gatilho de voz: {ex}")
 
 def requer_visao(texto):
+    """Diz se o utilizador pediu para ela olhar para o ecrã.
+
+    A lista foi alargada porque 'o que tens no ecra' ou 'o que estou a
+    fazer agora' caem fora dos padroes antigos e a Haimiya ficava calada.
+    """
     texto_min = texto.lower()
-    padrao_palavras = r"\b(olha|veja|tela|imagem|foto|analisa|analise|lê|leia|vendo)\b"
-    frases_exatas = ["o que é isso", "o que e isso", "o que tem na tela"]
+    padrao_palavras = (r"\b(olha|olhar|veja|ver|vê|ve|tela|ecra|ecrã|imagem|foto|"
+                       r"analisa|analise|analisar|lê|leia|lê-me|vendo|mostra|"
+                       r"mostrar|aconteceu|acontece)\b")
+    frases_exatas = ["o que é isso", "o que e isso", "o que tem na tela",
+                     "o que tens no ecra", "o que tens no ecrã", "aqui esta",
+                     "neste ecra", "neste ecrã", "no meu ecra", "no meu ecrã",
+                     "o que estou a ver", "o que estou a fazer agora",
+                     "estou a fazer o que", "o que se passa aqui"]
     if re.search(padrao_palavras, texto_min): return True
     if any(frase in texto_min for frase in frases_exatas): return True
     return False
