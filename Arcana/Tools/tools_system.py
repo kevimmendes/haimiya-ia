@@ -1,6 +1,4 @@
-import json
 import os
-import re
 from Arcana.Tools.computer_control import ComputerControl
 from Arcana.Tools.file_system import FileSystem
 from Arcana.Tools.games import Games
@@ -17,11 +15,13 @@ def _pesquisa_web(termo):
 
 
 class ToolsSystem:
-    def __init__(self, output_callback=None, vision_client=None, searcher=None, vision_model=None):
+    def __init__(self, output_callback=None, vision_client=None, searcher=None,
+                 vision_model=None, vision_local=False):
         self.output_callback = output_callback
         self.computer = ComputerControl(output_callback)
         self.files = FileSystem(output_callback)
-        self.screen = ScreenVision(output_callback, vision_client, vision_model)
+        self.screen = ScreenVision(output_callback, vision_client, vision_model,
+                                   vision_local)
         self.planner = TaskPlanner()
         self.searcher = searcher or _pesquisa_web
         self.photoshop = PhotoshopIntegration(output_callback, self.computer)

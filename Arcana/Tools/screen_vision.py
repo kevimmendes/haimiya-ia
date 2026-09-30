@@ -1,15 +1,18 @@
 import base64
 import io
 from PIL import ImageGrab
-import json
 
 class ScreenVision:
-    def __init__(self, output_callback=None, vision_client=None, vision_model=None):
+    def __init__(self, output_callback=None, vision_client=None, vision_model=None,
+                 vision_local=False):
         self.output_callback = output_callback
         self.vision_client = vision_client
         # Sem modelo definido nao ha como chamar a API: assume-se o mesmo
-        # modelo de texto, que e o que o run.py configura por omissao.
+        # modelo de texto, que e' o que o run.py configura por omissao.
         self.vision_model = vision_model or "qwen/qwen3.8-27b"
+        # Modelo local = CPU: captura menor e resposta curta, senao um
+        # simples "descreve o ecra" demora mais de um minuto e meio.
+        self.vision_local = vision_local
     
     def log(self, message):
         if self.output_callback:
@@ -21,7 +24,7 @@ class ScreenVision:
         """Capture screen and return as base64 string"""
         try:
             img = ImageGrab.grab()
-            img.thumbnail((1024, 1024))
+            img.thumbnail((512, 512) if self.vision_local else (1024, 1024))
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG", quality=70)
             return base64.b64encode(buffered.getvalue()).decode('utf-8')
@@ -39,11 +42,13 @@ class ScreenVision:
         if not b64_img:
             return None
         
-        prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes."
+        prompt_vision = "Descreva a imagem. Identifique contexto, textos, ações e detalhes."
         if user_query:
             prompt_vision += f"\nO usuário perguntou: '{user_query}'. Foque nisso."
         
         prompt_vision += "\nSeja conciso e direto."
+        if self.vision_local:
+            prompt_vision += "\nResponde SEMPRE em português, no máximo 2 frases curtas."
         
         try:
             res = self.vision_client.chat.completions.create(
@@ -55,12 +60,12 @@ class ScreenVision:
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
                     ]
                 }],
-                max_tokens=1024,
+                max_tokens=150 if self.vision_local else 1024,
                 temperature=0.1
             )
             
             descricao = res.choices[0].message.content
-            self.log(f"👁️ Análise de tela concluída")
+            self.log("👁️ Análise de tela concluída")
             return descricao
         except Exception as e:
             self.log(f"❌ Erro na análise de tela: {e}")

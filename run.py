@@ -220,10 +220,17 @@ def detectar_comando_musica(texto):
         
     return None
 
-def capturar_tela_b64():
+def capturar_tela_b64(max_lado=1024):
+    """Captura o ecrã em JPEG base64.
+
+    max_lado menor = menos "tokens de imagem" = resposta mais rapozinha.
+    Um modelo local em CPU (ex.: qwen2.5vl:3b no Ollama) trata ~1128 tokens
+    de imagem por cada 1024px de lado e demora ~2 minutos a descrever; com
+    640px sao ~450 tokens e fica 3 a 4 vezes mais rapido.
+    """
     try:
         img = ImageGrab.grab()
-        img.thumbnail((1024, 1024))
+        img.thumbnail((max_lado, max_lado))
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=70)
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
@@ -605,9 +612,14 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
     # 👁️ LÓGICA DE VISÃO
     if VISAO_HABILITADA and requer_visao(texto):
         print(" [SISTEMA] Intenção visual detetada! A analisar o ecrã com o llama...")
-        b64_img = capturar_tela_b64()
+        # Local = modelo pequeno na GPU: captura media e resposta curta
+        lado_visao = 512 if VISAO_LOCAL else 1024
+        tokens_visao = 150 if VISAO_LOCAL else 1024
+        b64_img = capturar_tela_b64(lado_visao)
         if b64_img:
             prompt_vision = f"Descreva a imagem. Identifique contexto, textos, ações e detalhes.\nO usuário pediu: '{texto}'. Foque nisso."
+            if VISAO_LOCAL:
+                prompt_vision += "\nResponde SEMPRE em português, no máximo 2 frases curtas."
             try:
                 res_vision = await chamada_com_tentativas(
                     lambda: client_vision.chat.completions.create(
@@ -619,7 +631,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
                             ]
                         }],
-                        max_tokens=1024,
+                        max_tokens=tokens_visao,
                         temperature=0.1
                     ),
                     o_que="visao")
@@ -1156,7 +1168,8 @@ async def main():
 
     # 🔥 INICIA O SISTEMA DE FERRAMENTAS
     global TOOLS_SYSTEM
-    TOOLS_SYSTEM = ToolsSystem(output_callback=print, vision_client=client_vision, vision_model=MODELO_VISAO)
+    TOOLS_SYSTEM = ToolsSystem(output_callback=print, vision_client=client_vision,
+                               vision_model=MODELO_VISAO, vision_local=VISAO_LOCAL)
 
     carregar_memoria()
     
