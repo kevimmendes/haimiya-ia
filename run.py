@@ -944,7 +944,10 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
 
         # 🔥 NOVO: Se a IA enviar só a tag e a resposta ficar vazia, o próprio LLM gera a frase curta!
         if not resposta_final:
-            historico_fallback = [{"role": "system", "content": f"Aja como {nome_ai}, usando a sua personalidade sarcástica. Fale uma frase curta (entre 1 a 7 palavras) confirmando que acabou de executar o comando que o usuário pediu. Não use tags nem asteriscos."}]
+            # A API recusa um pedido sem nenhuma mensagem do utilizador
+            # ("No user query found in messages", erro 400), por isso a
+            # instrucao vem em system E em user.
+            historico_fallback = [{"role": "system", "content": "Você é um assistente que responde com frases curtas, sem tags nem asteriscos."}, {"role": "user", "content": f"Aja como {nome_ai}, usando a sua personalidade sarcástica. Confirma em UMA frase curta (entre 1 a 7 palavras) que acabaste de executar o comando. Não use tags nem asteriscos."}]
             try:
                 res_fall = await chamada_com_tentativas(
                     lambda: cliente_ativo.chat.completions.create(
