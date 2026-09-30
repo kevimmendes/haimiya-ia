@@ -16,6 +16,7 @@ import keyboard
 import threading
 import os
 import base64
+import time
 import subprocess  # Adicionado
 import sys         # Adicionado
 from PIL import ImageGrab
@@ -75,6 +76,23 @@ MODELO_VISAO = os.getenv("VISAO_MODELO", "").strip() or (
     else VISAO_MODELO_PADRAO_GROQ
 )
 VISAO_LOCAL = VISAO_PROVEDOR in ("local", "ollama", "lmstudio")
+
+# 👂 OUVINTE DO PC: ela fica sempre a escutar o audio que o PC reproduz
+# (loopback), mas isso NAO gasta tokens: so' guarda o audio num buffer
+# rolante de 30 s. A transcricao (Whisper) so' e paga quando perguntas
+# 'o que esta a tocar?' ou 'ouviste o que eu disse?'. A deteccao de fala e'
+# energetica (sem rede), portanto estar sempre a escutar custa zero tokens.
+#
+#   AUDIO_PC_HABILITADO=true|false  -> liga/desliga a escuta do PC
+#   AUDIO_PC_SEGUNDOS=8             -> segundos transcritos por pergunta
+#   AUDIO_PC_PROATIVO=false         -> true = transcreve tambem sozinha quando
+#                                      deteta fala (gasta tokens, so' ativa
+#                                      se quiseres mesmo)
+AUDIO_PC_HABILITADO = os.getenv("AUDIO_PC_HABILITADO", "true").strip().lower() in (
+    "1", "true", "sim", "yes")
+AUDIO_PC_SEGUNDOS = int(os.getenv("AUDIO_PC_SEGUNDOS", "8") or 8)
+AUDIO_PC_PROATIVO = os.getenv("AUDIO_PC_PROATIVO", "false").strip().lower() in (
+    "1", "true", "sim", "yes")
 
 # ======================================================
 # 🚦 LIMITE DE PEDIDOS ("many requests" / 429)
@@ -160,6 +178,9 @@ CONTADOR_VISAO = 0       # Contador para limpar a memória visual
 
 # 🔥 SISTEMA DE FERRAMENTAS (global, como VISAO_HABILITADA - inicializado no main)
 TOOLS_SYSTEM = None
+
+# A escuta do PC pode ser ligada/desligada pelo menu (opcao 6) ou pelo F5.
+MODO_ESCUTA_ATIVA = False
 
 def abrir_gui_modelos():
     """Abre o painel de controlo unico da Haimiya (o mesmo do F4).
@@ -633,8 +654,34 @@ async def whisper_transcription(audio_frames, api_key):
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     head = {"Authorization": f"Bearer {api_key}"}
     files = {"file": ("input.wav", final_wav, "audio/wav"), "model": (None, MODELO_TRANSCRICAO), "language": (None, "pt")}
-    resp = await asyncio.to_thread(requests.post, url, headers=head, files=files)
+    # temperature=0 evita o loop de repeticoes do Whisper quando o audio e'
+    # ajuda (musica, silencio): com temperatura >0 ele inventa frases.
+    form = {"temperature": "0"}
+    resp = await asyncio.to_thread(requests.post, url, headers=head, files=files, data=form)
     return resp.json().get("text", "") if resp.status_code == 200 else None
+
+# 👂 OUVINTE DO PC --------------------------------------------------
+async def ouvir_pc_e_descrever(segundos=None):
+    """Transcreve o que se ouve no PC agora. E' o UNICO sitio onde a
+    escuta do PC gasta tokens, e so' quando o utilizador pergunta.
+    Devolve um texto pronto para meter no contexto da IA."""
+    from Arcana.Tools.ouvinte_pc import obter_ouvinte
+    segundos = segundos or AUDIO_PC_SEGUNDOS
+    ouvinte = obter_ouvinte()
+    if not ouvinte.a_viver():
+        if not ouvinte.iniciar():
+            return f"[não consegui abrir a escuta do áudio do PC: {ouvinte.erro}]"
+        await asyncio.sleep(1.5)          # deixa encher um bocado o buffer
+    if not ouvinte.tem_som():
+        return "[o áudio do PC está em silêncio]"
+    wav = ouvinte.ultimos_segundos(segundos, so_fala=True)
+    if not wav:
+        # sem voz no buffer: devolve aviso em vez de gastar tokens a topar
+        return "[não há voz audível no áudio do PC agora — só música ou silêncio]"
+    texto = await whisper_transcription([wav], GROQ_API_KEY_LLM)
+    if not texto:
+        return "[o áudio do PC não foi percebido como fala]"
+    return texto.strip()
 #endregion
 # ======================================================
 #region 🕹️ CÉREBRO DA IA (PROCESSAMENTO INTEGRADO LLM + SCOUT)
@@ -701,6 +748,25 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
 
             except Exception as e:
                 print(f" Erro na API de Visão (Scout): {e}")
+
+    # 👂 LÓGICA DE ESCUTA DO PC (o que está a tocar / o que disseste)
+    # Só transcreve quando perguntas -> é o único momento que gasta tokens.
+    if AUDIO_PC_HABILITADO:
+        from Arcana.Tools.ouvinte_pc import requer_escuta_pc
+        if requer_escuta_pc(texto):
+            print(" [SISTEMA] Pergunta sobre o áudio do PC! A escutar...")
+            try:
+                o_que_se_ouviu = await ouvir_pc_e_descrever()
+                print(f" [OUVIDO] {o_que_se_ouviu}")
+                if not o_que_se_ouviu.startswith("["):
+                    historico_api[-1]["content"] += (
+                        "\n\n[SISTEMA: Ouvi agora o áudio do teu PC e transcrevi: "
+                        f"'{o_que_se_ouviu}'. Responde a partir disto, sem inventar "
+                        "o resto. Se for musica, diz honestamente que parece musica "
+                        "e nao consegues ler a letra com certeza.]"
+                    )
+            except Exception as e:
+                print(f" Erro ao ouvir o áudio do PC: {e}")
 
     # 🧠 LÓGICA DO CÉREBRO PRINCIPAL
     _, _, _, _, _, modelos_config, *_ = carregar_brain()
@@ -1081,6 +1147,152 @@ async def run_modo_continuo(client_nvidia, client_llm, client_vision, sys_prompt
         await asyncio.sleep(0.01)
     stream.stop_stream(); stream.close(); p.terminate()
     
+async def run_escuta_pc(client_nvidia, client_llm, client_vision, sys_prompt, nome_ai, usuario_nome, launcher):
+    """🎧 Ouve o audio do PC em TEMPO REAL, sem gravar nada em disco.
+
+    Ela fica sempre a escutar o que o PC reproduz (loopback). Nao ha ficheiros
+    nem gravacao: o audio vive num buffer de memoria de 30 s e e' apagado
+    assim que deixa de ser preciso.
+
+    IMPORTANTISSIMO (tokens): o loop so' TRANSCREVE quando ha fala de verdade
+    a terminar. Como ela apanha um video ou uma musica, o teste e' feito na
+    banda da voz e numa janela de 2 s: silencio, musica e pausas nao gastam
+    nada. Se o audio nao for voz (ex.: musica), gasta-se UM unico pedido para
+    ela dizer 'ouvi musica, mas nao ha voz' e so' a cada 60 s.
+
+    F5  -> ligar/desligar a escuta (tambem pelo botao do menu)
+    F6  -> transcrever os ultimos 10 s sem esperar pela fala
+    HOME-> voltar ao menu
+    """
+    from Arcana.Tools.ouvinte_pc import obter_ouvinte
+    ouvinte = obter_ouvinte()
+    if not ouvinte.a_viver() and not ouvinte.iniciar():
+        print(f" [ERRO] Não consegui abrir a escuta do áudio do PC: {ouvinte.erro}")
+        return
+
+    print("\n" + "="*30)
+    print(" 🎧 ESCUTA DO PC (tempo real)")
+    print(f" A escutar: {ouvinte.dispositivo}")
+    print(" F5: parar escutar | F6: transcrever 10s | HOME: menu")
+    print("="*30)
+
+    ESCUTA_ATIVA = True            # global: o botao do menu tambem mexe nisto
+    global MODO_ESCUTA_ATIVA
+    MODO_ESCUTA_ATIVA = True
+
+    frames = []                    # audio desta fala (so' em memoria)
+    silencio = 0                   # blocos de 100 ms sem voz
+    a_falar = False
+    tempo_fala = 0.0               # segundos de voz nesta fala
+    ultima_transcricao = 0.0
+
+    def manter_ouvinte_vivo():
+        """O soundcard pode perder o dispositivo: voltamos a abrir."""
+        if not ESCUTA_ATIVA:
+            return
+        if not ouvinte.a_viver() and not ouvinte._parar.is_set():
+            print(" [AUDIO] O dispositivo mudou, a reabrir a escuta...")
+            ouvinte.iniciar()
+
+    while True:
+        if keyboard.is_pressed('home'):
+            return
+        if keyboard.is_pressed('f5'):
+            if ESCUTA_ATIVA:
+                ESCUTA_ATIVA = False
+                MODO_ESCUTA_ATIVA = False
+                ouvinte.parar()
+                print("\n👂 Escuta do PC DESLIGADA (ela parou de escutar)")
+            else:
+                if ouvinte.iniciar():
+                    ESCUTA_ATIVA = True
+                    MODO_ESCUTA_ATIVA = True
+                    print("\n👂 Escuta do PC LIGADA")
+            while keyboard.is_pressed('f5'):
+                await asyncio.sleep(0.05)
+
+        if not ESCUTA_ATIVA:
+            await asyncio.sleep(0.15)
+            manter_ouvinte_vivo()
+            continue
+
+        await asyncio.sleep(0.1)
+        manter_ouvinte_vivo()
+
+        # ---- F6: transcrever o que ouviu agora, a pedido ----
+        if keyboard.is_pressed('f6'):
+            while keyboard.is_pressed('f6'):
+                await asyncio.sleep(0.05)
+            print(" [AUDIO] A transcrever os últimos 10s...")
+            o_que = await ouvir_pc_e_descrever(10)
+            print(f" 👂 Ouvi: {o_que}")
+            await processar_ia(client_nvidia, client_llm, client_vision, sys_prompt,
+                               f"[escuta do PC] {o_que}", nome_ai, usuario_nome,
+                               launcher, modo_chat=False)
+            frames = []
+            silencio = 0
+            a_falar = False
+            continue
+
+# ---- tempo real: apanha o audio que acabou de passar ----
+        with ouvinte._lock:
+            tem_som = bool(ouvinte._nivel_bruto and ouvinte._nivel_bruto[-1] > 0.008)
+            bloco = ouvinte._buffer[-1] if ouvinte._buffer else None
+        # so' apanha o audio para transcrever se o modo proativo estiver ligado
+        ha_fala = AUDIO_PC_PROATIVO and ouvinte.fala_agora()
+
+        if ha_fala:
+            a_falar = True
+            silencio = 0
+            tempo_fala += 0.1
+            if bloco is not None:
+                frames.append(bloco)
+                if len(frames) > 100:            # ~10 s de fala
+                    frames.pop(0)
+        elif a_falar:
+            # a pessoa calou-se: guarda um bocado e conta o silencio
+            if bloco is not None and len(frames) < 105:
+                frames.append(bloco)
+            silencio += 1
+            if silencio >= 15:                   # ~1.5 s de silencio = acabou
+                a_falar = False
+                # sem fala suficiente nao transcreve: e' ai que nasce a
+                # hallucinacao do Whisper (uma palavra de ruido vira frase)
+                if tempo_fala < 0.8:
+                    frames = []
+                    tempo_fala = 0.0
+                    continue
+                # 10 s entre pedidos: com video a tocar nunca passa de 6
+                # transcricoes por minuto, mesmo com fala continua
+                if (time.time() - ultima_transcricao) < 10:
+                    frames = []
+                    tempo_fala = 0.0
+                    continue
+                ultima_transcricao = time.time()
+                wav = ouvinte._wav_de(frames)
+                frames = []
+                tempo_fala = 0.0
+                if wav:
+                    texto = (await whisper_transcription([wav], GROQ_API_KEY_LLM) or "").strip()
+                    if texto:
+                        print(f" 👂 [tempo real] {texto}")
+                        await processar_ia(
+                            client_nvidia, client_llm, client_vision, sys_prompt,
+                            f"[ouveu no PC] {texto}\n"
+                            "(esta e' uma transcricao automatica do audio do PC e pode "
+                            "estar errada; se nao fizer sentido, diz honestamente que "
+                            "nao percebes o que ouviu em vez de inventar)",
+                            nome_ai, usuario_nome, launcher, modo_chat=False)
+                    elif tem_som and (time.time() - ultima_transcricao) > 60:
+                        # so' musica/efeitos: UM pedido para dizer isso, e nao mais
+                        ultima_transcricao = time.time()
+                        print(" 👂 [tempo real] som sem voz - 1 pedido para descrever")
+                        await processar_ia(
+                            client_nvidia, client_llm, client_vision, sys_prompt,
+                            "[ouveu no PC] há som no áudio do PC, mas não há voz para "
+                            "transcrever (provavelmente música ou efeitos).",
+                            nome_ai, usuario_nome, launcher, modo_chat=False)
+
 async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, api_key_whisper, nome_ai, usuario_nome, launcher):
     print("\n" + "="*30)
     print(" MODO CLICK-TO-TALK")
@@ -1153,6 +1365,17 @@ async def main():
     keyboard.add_hotkey('f4', RemGUI.toggle)
     keyboard.on_press_key('f2', toggle_visao)
     keyboard.on_press_key('f3', toggle_gatilho) 
+
+    # 👂 OUVINTE DO PC: fica sempre a escutar o audio que o PC reproduz.
+    # Custo zero tokens: so' escreve num buffer rolante de 30 s. A transcricao
+    # so' acontece quando perguntas 'o que esta a tocar?'.
+    if AUDIO_PC_HABILITADO:
+        from Arcana.Tools.ouvinte_pc import obter_ouvinte
+        _ouvinte = obter_ouvinte()
+        if _ouvinte.iniciar():
+            print("👂 Ouvinte do PC LIGADO (só transcreve quando perguntares)")
+        else:
+            print(f"👂 Ouvinte do PC desligado: {_ouvinte.erro}") 
 
     NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
     GROQ_API_KEY_LLM = os.getenv("GROQ_API_KEY_LLM")
@@ -1240,6 +1463,12 @@ async def main():
         print(f"\n{'='*15} MENU {nome_ai} {'='*15}")
         print(f"Gatilho F3: {'LIGADO' if trigger else 'DESLIGADO'}")
         print(f"Visão F2: {'LIGADA' if VISAO_HABILITADA else 'DESLIGADA'}")
+        if AUDIO_PC_HABILITADO:
+            from Arcana.Tools.ouvinte_pc import obter_ouvinte
+            _est = obter_ouvinte().estado()
+            print(f"Ouvinte PC: {'a escutar' if _est['vivo'] else 'inativo'} "
+                  f"({_est['dispositivo'] or 'sem dispositivo'}"
+                  f"{', há som' if _est['tem_som'] else ''})")
         print(f"Discord: {'LIGADO' if discord_active else 'DESLIGADO'}")
         print(f"Utilizador atual: {usuario_nome}")
         print("| 1. Chat")
@@ -1247,6 +1476,8 @@ async def main():
         print("| 3. Click-to-Talk")
         print("| 4. Alternar Discord")
         print("| 5.  Painel Gráfico (Mudar Cérebro Nvidia/Groq)")
+        print("| 6.  👂 Escutar o Áudio do PC (tempo real)")
+        print("| 7.  Parar de Escutar")
         print("| 0. Sair")
         
         op = await asyncio.to_thread(input, "Opção: ")
@@ -1270,6 +1501,15 @@ async def main():
                 print("\n [SISTEMA] Discord foi DESLIGADO (A ligação ao servidor será encerrada no próximo reinício do script).")
         elif op == '5':
             await asyncio.to_thread(abrir_gui_modelos)
+        elif op == '6':
+            await run_escuta_pc(client_nvidia, client_llm, client_vision, sys_prompt,
+                                nome_ai, usuario_nome, launcher)
+        elif op == '7':
+            from Arcana.Tools.ouvinte_pc import obter_ouvinte
+            global MODO_ESCUTA_ATIVA
+            obter_ouvinte().parar()
+            MODO_ESCUTA_ATIVA = False
+            print("\n👂 Escuta do PC DESLIGADA (ela parou de escutar)")
         
         elif op == '0': break
 if __name__ == "__main__":

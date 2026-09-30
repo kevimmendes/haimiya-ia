@@ -18,3 +18,4 @@ websocket-client
 PyQt5
 torchaudio
 packaging
+soundcard
