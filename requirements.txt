@@ -19,3 +19,5 @@ PyQt5
 torchaudio
 packaging
 soundcard
+# opcional: transcrições no <UTIL:youtube:...> (sem isto, cai no título/descrição)
+youtube-transcript-api
