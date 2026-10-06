@@ -518,6 +518,17 @@ async def gerenciar_e_salvar_memoria(client_llm, sender, message):
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     memoria["mensagens"].append({"timestamp": agora, "sender": sender, "message": message})
 
+    # 🧠 RAMO VETORIAL: guarda também na memória de longo prazo (ChromaDB)
+    # para o RAG recuperar depois. Falha silenciosa se não estiver instalado.
+    try:
+        from Arcana.Memoria.vector_store import get_vector_memory
+        get_vector_memory().add_text(
+            f"[{sender}] {message}",
+            {"timestamp": agora, "sender": sender, "tipo": "conversa"},
+        )
+    except Exception:
+        pass
+
     if len(memoria["mensagens"]) >= 15:
         print("\n [SISTEMA] Otimizando memória (Resumindo conversas antigas)...")
         msgs_para_resumir = memoria["mensagens"][:10]
@@ -795,8 +806,29 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
 
     await gerenciar_e_salvar_memoria(client_llm, usuario_nome, texto)
     memoria_atual = carregar_memoria()
-    
+
+    # 🧠 RAG: puxa o contexto passado mais parecido com o que esta a ser
+    # perguntado agora. Sem isto, a Haimiya esquece o que se falou ontem
+    # assim que a conversa passa para o resumo. A busca é vetorial e barata
+    # (ChromaDB); se o módulo não estiver instalado, simplesmente não injeta.
+    contexto_extra = ""
+    try:
+        from Arcana.Memoria.vector_store import get_vector_memory
+        _vm = get_vector_memory()
+        _achados = _vm.search(texto, n_results=3)
+        if _achados:
+            contexto_extra = "\n".join(f"- {h['text']}" for h in _achados)
+    except Exception:
+        contexto_extra = ""
+
     historico_api = construir_historico_para_api(sys_prompt, memoria_atual, nome_ai, launcher)
+
+    if contexto_extra:
+        historico_api.append({
+            "role": "user",
+            "content": ("[MEMÓRIA DE LONGO PRAZO (contexto relevante recuperado "
+                        "do que já foi conversado antes)]:\n" + contexto_extra),
+        })
 
     if _confirmada == "CANCELADO":
         historico_api.append({
