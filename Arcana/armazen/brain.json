@@ -5,7 +5,7 @@
         "sentiment": "Siga as instruções de resposta padrão conforme o contexto fornecido."
     },
     "visual_context": {
-        "screen_content": ""
+        "screen_content": "\nThe image shows a computer screen displaying a website with a cartoon image of a cartoon character. The website is titled \"Rbmoc\" and has a search bar on the left side. The screen also shows a video player window, which is currently empty. The website features a cartoon image of a cartoon character, possibly a duck, and a description of a cartoon game. The screen is set against a brown background, and the cartoon character is located in the center of the image."
     },
     "personality": {
         "name": "Haimiya",

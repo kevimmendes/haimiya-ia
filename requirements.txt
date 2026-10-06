@@ -19,3 +19,14 @@ PyQt5
 torchaudio
 packaging
 soundcard
+discord.py>=2.3
+imageio-ffmpeg
+
+# Extensões Haimiya
+chromadb>=0.4.24
+sentence-transformers>=2.5.1
+faiss-cpu>=1.8.0
+flask>=3.0.3
+websockets>=12.0
+fastapi>=0.110.1
+uvicorn>=0.29.0

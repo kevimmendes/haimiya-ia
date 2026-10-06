@@ -149,7 +149,20 @@ from Arcana.Tools.tools_system import ToolsSystem
 # 🔥 IMPORTAÇÃO DO SEU MÓDULO DE PESQUISA
 import Arcana.Net.search_ddg as search_ddg
 
-#from Arcana.Net.discord_Rem import run_discord_bot
+# 🔒 PERMISSÕES: quem pode pedir o quê. Vem antes de tudo o resto porque o
+#Discord e' que vai trazer papeis (dono/admin/comum) de gente que nao e' o
+#dono do programa, e todas as tags passam por aqui antes de fazerem alguma
+#coisa no PC.
+from Arcana.Tools.permissions import (
+    PAPEL_ADMIN, PAPEL_COMUM, PAPEL_DONO, Permissoes,
+)
+from Arcana.Tools import stt
+
+# O bot do Discord NAO e' importado aqui. Se o discord.py nao estiver
+# instalado, este programa tem de continuar a funcionar na mesma (voz local,
+# visao, PC); a falha do Discord nao pode ser a falha da Haimiya. Por isso o
+# modulo só é carregado quando o Discord e' ligado, em `_ligar_discord`.
+DISCORD_BOT = None
 
 # 🔥 IMPORTAÇÃO DO SEU MÓDULO DE AUTOMAÇÃO DE APPS
 from Arcana.Aura.app_launcher import AppLauncher 
@@ -178,6 +191,82 @@ CONTADOR_VISAO = 0       # Contador para limpar a memória visual
 
 # 🔥 SISTEMA DE FERRAMENTAS (global, como VISAO_HABILITADA - inicializado no main)
 TOOLS_SYSTEM = None
+
+# 🔒 Quem pode pedir o quê. Sem isto, qualquer pessoa que chegue a call
+# mandar a IA abrir programas e mexer nos ficheiros. Inicializado no main
+# a partir do brain.json.
+PERMISSOES = Permissoes()
+
+
+def gate_de_permissao(papel_usuario, tag_nome, accao=""):
+    """Diz se este papel pode executar esta tag. Devolve (ok, motivo).
+
+    Chamado ANTES de cada execucao de tag no processar_ia. O motivo devolve
+    em portugues para a IA poder explicar a recusa em vez de falhar calada.
+    """
+    if PERMISSOES is None:
+        return True, ""
+    try:
+        ok, motivo = PERMISSOES.pode_tag(papel_usuario, tag_nome)
+    except Exception:
+        return True, ""      # nunca deixar a segurança ser a causa da falha
+    if ok and accao and PERMISSOES.e_perigosa(acao):
+        return True, ""      # perigoso: tratado a parte, na confirmation
+    return ok, motivo
+
+
+# 🔒 CONFIRMAÇÕES À ESPERA
+# Uma ação perigosa ("apaga a pasta Downloads") não pode acontecer na mesma
+# frase em que foi pedida. Fica aqui à espera de um "sim", e só nessa altura
+# é executada. A chave é o nome de quem pediu, para a confirmação vá para a
+# mesma pessoa que deu a ordem.
+PENDENTE_PC = {}
+
+SIM = ("sim", "s", "yes", "y", "podes", "pod", "confirmo", "autorizo",
+       "autoriza", "vai", "manda", "faz isso", "faz lá isso", "bora", "ok", "okay")
+NAO = ("não", "nao", "no", "n", "cancela", "cancelar", "deixa", "deixar",
+       "não faz", "nao faz", "esquece", "esqueça", "pára", "para")
+
+
+def _chave_pessoa(nome):
+    return (nome or "").strip().lower()
+
+
+def _e_resposta(texto, palavras):
+    """Diz se a mensagem é nada mais nada menos uma destas palavras."""
+    t = re.sub(r"[^\w\s]", " ", (texto or "").lower()).strip()
+    t = re.sub(r"\s+", " ", t)
+    return any(t == p or t.startswith(p + " ") or t.startswith(p + "!")
+               or t.startswith(p + "?") for p in palavras)
+
+
+def _confirmacao_aceite(usuario_nome, texto):
+    """Se a pessoa respondeu 'sim' ao que estava pendente, devolve a tag.
+
+    Devolve as tags <COMPUTER:...> prontas a executar, ou None. Quem chamou
+    junta essas tags à resposta da IA e o bloco de execução faz o que sempre
+    fez — não há um segundo caminho de execução para manutenção.
+
+    Se guardou várias tags (uma resposta pode pedir duas coisas), volta
+    todas: confirmar uma e não a outra era exatamente o buraco por onde
+    passavam os comandos perigosos.
+    """
+    chave = _chave_pessoa(usuario_nome)
+    if chave not in PENDENTE_PC:
+        return None
+    pendente = PENDENTE_PC.pop(chave)
+    tags = pendente["tags"] if "tags" in pendente else [pendente["tag"]]
+    resumo = " | ".join(tags)
+    if _e_resposta(texto, NAO):
+        print(f" [SEGURANÇA] {usuario_nome} cancelou: {resumo}")
+        return "CANCELADO"
+    if _e_resposta(texto, SIM):
+        print(f" [SEGURANÇA] {usuario_nome} CONFIRMOU: {resumo}")
+        return "\n".join(tags)
+    # Nem sim nem não: a confirmação continua à espera.
+    pendente["tags"] = tags
+    PENDENTE_PC[chave] = pendente
+    return None
 
 # A escuta do PC pode ser ligada/desligada pelo menu (opcao 6) ou pelo F5.
 MODO_ESCUTA_ATIVA = False
@@ -644,21 +733,14 @@ async def microsoft_speak(text):
     pygame.mixer.quit()
 
 async def whisper_transcription(audio_frames, api_key):
-    audio_data = b''.join(audio_frames)
-    with io.BytesIO() as wb:
-        with wave.open(wb, 'wb') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
-            wf.writeframes(audio_data)
-        wb.seek(0)
-        final_wav = wb.read()
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    head = {"Authorization": f"Bearer {api_key}"}
-    files = {"file": ("input.wav", final_wav, "audio/wav"), "model": (None, MODELO_TRANSCRICAO), "language": (None, "pt")}
-    # temperature=0 evita o loop de repeticoes do Whisper quando o audio e'
-    # ajuda (musica, silencio): com temperatura >0 ele inventa frases.
-    form = {"temperature": "0"}
-    resp = await asyncio.to_thread(requests.post, url, headers=head, files=files, data=form)
-    return resp.json().get("text", "") if resp.status_code == 200 else None
+    """Voz -> texto. Agora so' embrulha o stt.py partilhado.
+
+    Antes esta funcao montava o WAV e falava com a Groq aqui dentro. O
+    Discord precisa do mesmo pedido para ouvir a call, e ter duas copias
+    significa que, quando o modelo muda, uma das duas fica desatualizada.
+    """
+    wav = stt.em_wav(audio_frames)
+    return await asyncio.to_thread(stt.transcrever, wav, api_key, MODELO_TRANSCRICAO)
 
 # 👂 OUVINTE DO PC --------------------------------------------------
 async def ouvir_pc_e_descrever(segundos=None):
@@ -686,14 +768,52 @@ async def ouvir_pc_e_descrever(segundos=None):
 # ======================================================
 #region 🕹️ CÉREBRO DA IA (PROCESSAMENTO INTEGRADO LLM + SCOUT)
 # ======================================================
-async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, texto, nome_ai, usuario_nome, launcher, modo_chat=False):
-    if not modo_chat:
+async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, texto, nome_ai, usuario_nome, launcher, modo_chat=False, papel_usuario=PAPEL_DONO, origem="local"):
+    """O cerebro. Devolve SEMPRE a resposta final em texto.
+
+    `papel_usuario` e o que decide o que a IA pode executar (ver
+    permissions.py). Por omissao e' dono: quem esta ao teclado e' o dono,
+    tal como estava antes de o Discord existir. Quem vem do Discord traz o
+    papel que o modulo de permissoes lhe deu.
+
+    `origem` distingue a voz local (que fala pelos altifalantes do PC) do
+    Discord (que fala no canal de voz, e nao aqui).
+    """
+    # No Discord a resposta vai para a call/para o canal: escreve-la na
+    # consola e um' segunda vez nao ajuda ninguem.
+    do_discord = origem == "discord"
+    if not modo_chat and not do_discord:
         print(f"{usuario_nome}: {texto}")
-        
+
+    # O que este utilizador pediu e' recusado por falta de permissao. A IA
+    # recebe a recusa como contexto e explica-lha com as palavras dela.
+    _sem_permissao = set()
+
+# 🔒 Se estava pendente uma acao perigosa e a pessoa respondeu 'sim',
+    # a tag dela volta a entrar na resposta e executa como se fosse nova.
+    _confirmada = _confirmacao_aceite(usuario_nome, texto)
+
     await gerenciar_e_salvar_memoria(client_llm, usuario_nome, texto)
     memoria_atual = carregar_memoria()
     
     historico_api = construir_historico_para_api(sys_prompt, memoria_atual, nome_ai, launcher)
+
+    if _confirmada == "CANCELADO":
+        historico_api.append({
+            "role": "user",
+            "content": ("[SISTEMA: o utilizador ACABOU DE CANCELAR uma acao "
+                        "perigosa que tinhas pedido para executar. Diz só que "
+                        "não fazes isso, numa frase curta, e não voltes a "
+                        "oferecer-ma."),
+        })
+    elif _confirmada is None and _chave_pessoa(usuario_nome) in PENDENTE_PC:
+        historico_api.append({
+            "role": "user",
+            "content": ("[SISTEMA: há uma acao perigosa à espera de "
+                        "confirmação e o utilizador não disse sim nem não. "
+                        "Pergunta outra vez, de forma curta, o que queres "
+                        "fazer a seguir. Não executes nada entretanto."),
+        })
     
     # 🔥 INJETOR DE PRESSÃO: Força o LLM a não esquecer a tag da música
     comando_musica = detectar_comando_musica(texto)
@@ -702,7 +822,28 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         historico_api[-1]["content"] += alerta
 
     # 👁️ LÓGICA DE VISÃO
-    if VISAO_HABILITADA and requer_visao(texto):
+    # Ver o ecrã do PC é ver a máquina dele: só quem tem o papel certo pede.
+    # Sem esta porta, qualquer pessoa na call escrevia "olha o ecra" e recebia
+    # uma descrição do que o dono tinha aberto.
+    _pode_ver, _motivo_ver = gate_de_permissao(papel_usuario, "COMPUTER")
+    # A recusa só entra no histórico se a pessoa PEDIU mesmo o ecrã. Sem
+    # esta condição, um utilizador comum levava a frase "não posso ver o
+    # ecrã" em cima de todas as perguntas que fazia.
+    _pediu_ecra = requer_visao(texto)
+    if not _pode_ver and _pediu_ecra:
+        print(f" [SEGURANÇA] {usuario_nome} pediu para ver o ecrã e foi recusado: {_motivo_ver}")
+        historico_api.append({
+            "role": "user",
+            "content": (
+                f"[SISTEMA DE SEGURANÇA: NÃO FAÇAS ISTO] O utilizador '{usuario_nome}' "
+                f"pediu-te para olhares para o ecrã do computador, mas NÃO tens "
+                f"permissão: {_motivo_ver} Explica-lhe isso em UMA frase curta, "
+                f"sem falar de 'tags', 'sistema' ou 'permissão' como se fosses um "
+                f"programa, e sem prometer que vais fazê-lo."
+            ),
+        })
+        _sem_permissao.add("ecra")
+    if VISAO_HABILITADA and _pode_ver and _pediu_ecra:
         print(" [SISTEMA] Intenção visual detetada! A analisar o ecrã com o llama...")
         # Local = modelo pequeno: dá-lhe a janela em foco (texto legível) e
         # pede uma resposta curta, senão inventa o que não está no ecrã.
@@ -751,22 +892,44 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
 
     # 👂 LÓGICA DE ESCUTA DO PC (o que está a tocar / o que disseste)
     # Só transcreve quando perguntas -> é o único momento que gasta tokens.
+    # Ouvir o áudio do PC é, tal como ver o ecrã, meter-se na máquina dele:
+    # porta fechada para quem não tem o papel.
+    _pode_ouvir, _motivo_ouvir = gate_de_permissao(papel_usuario, "COMPUTER")
+    _quer_ouvir = False
     if AUDIO_PC_HABILITADO:
         from Arcana.Tools.ouvinte_pc import requer_escuta_pc
-        if requer_escuta_pc(texto):
-            print(" [SISTEMA] Pergunta sobre o áudio do PC! A escutar...")
-            try:
-                o_que_se_ouviu = await ouvir_pc_e_descrever()
-                print(f" [OUVIDO] {o_que_se_ouviu}")
-                if not o_que_se_ouviu.startswith("["):
-                    historico_api[-1]["content"] += (
-                        "\n\n[SISTEMA: Ouvi agora o áudio do teu PC e transcrevi: "
-                        f"'{o_que_se_ouviu}'. Responde a partir disto, sem inventar "
-                        "o resto. Se for musica, diz honestamente que parece musica "
-                        "e nao consegues ler a letra com certeza.]"
-                    )
-            except Exception as e:
-                print(f" Erro ao ouvir o áudio do PC: {e}")
+        _quer_ouvir = requer_escuta_pc(texto)
+    if not _pode_ouvir and _quer_ouvir:
+        print(f" [SEGURANÇA] {usuario_nome} pediu para ouvir o PC e foi recusado: {_motivo_ouvir}")
+        _sem_permissao.add("ouvir_o_pc")
+    if AUDIO_PC_HABILITADO and _pode_ouvir and _quer_ouvir:
+        print(" [SISTEMA] Pergunta sobre o áudio do PC! A escutar...")
+        try:
+            o_que_se_ouviu = await ouvir_pc_e_descrever()
+            print(f" [OUVIDO] {o_que_se_ouviu}")
+            if not o_que_se_ouviu.startswith("["):
+                historico_api[-1]["content"] += (
+                    "\n\n[SISTEMA: Ouvi agora o áudio do teu PC e transcrevi: "
+                    f"'{o_que_se_ouviu}'. Responde a partir disto, sem inventar "
+                    "o resto. Se for musica, diz honestamente que parece musica "
+                    "e nao consegues ler a letra com certeza.]"
+                )
+        except Exception as e:
+            print(f" Erro ao ouvir o áudio do PC: {e}")
+
+    # Se sobrou alguma recusa, diz-se agora, antes de gastar o pedido: assim
+    # a IA responde a uma coisa so, em vez de se truncar a meio.
+    if _sem_permissao:
+        historico_api.append({
+            "role": "user",
+            "content": (
+                "[SISTEMA DE SEGURANÇA: NÃO FAÇAS ISTO] Este pedido foi-recusado "
+                "por falta de permissão: " + "; ".join(sorted(_sem_permissao)) + ". "
+                "Diz isso ao utilizador numa frase curta e natural, com a tua "
+                "personalidade. Não cites 'sistema', 'tags' nem 'permissão' como "
+                "se fosses um programa, e não o faças repetir."
+            ),
+        })
 
     # 🧠 LÓGICA DO CÉREBRO PRINCIPAL
     _, _, _, _, _, modelos_config, *_ = carregar_brain()
@@ -780,7 +943,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         if not id_modelo:
             print(" ERRO: provedor 'nvidia' ativo, mas 'nvidia_modelo' não está definido no brain.json.")
             print(" Adiciona  \"nvidia_modelo\": \"<id-do-modelo>\"  dentro de modelos_ativos, ou volta para Groq.")
-            return
+            return "O meu cérebro está mal configurado, diz ao dono para ver o console."
         extra = {"chat_template_kwargs": {"thinking": False}}
     else:
         cliente_ativo = client_llm
@@ -799,9 +962,11 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
             lambda: cliente_ativo.chat.completions.create(**kwargs_initial),
             o_que="primeira resposta")
         if res is None:
-            resposta_final = f"{nome_ai}: estou a levar com o limite de pedidos da API. Tenta daqui a bocado."
-            print(f" {resposta_final}")
-            return
+            resposta_final = "Estou a levar com o limite de pedidos da API. Tenta daqui a bocado."
+            if not do_discord:
+                print(f" {nome_ai}: {resposta_final}")
+                await microsoft_speak(resposta_final)
+            return resposta_final
         resposta_inicial = res.choices[0].message.content
         resposta_inicial = re.sub(r'<think>.*?</think>', '', resposta_inicial, flags=re.IGNORECASE | re.DOTALL).strip()
         
@@ -813,24 +978,36 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         if match_musica:
             tag_musica = match_musica.group(1).upper()
             tag_completa = match_musica.group(0)
-            
-            resposta_inicial = resposta_inicial.replace(tag_completa, "").strip()
-            resposta_final = resposta_inicial 
 
-            try:
-                if os.path.exists(BRAIN_FILE):
-                    with open(BRAIN_FILE, "r+", encoding="utf-8") as f:
-                        brain_data = json.load(f)
-                        brain_data["pending_music"] = f"<{tag_musica}>"
-                        f.seek(0)
-                        json.dump(brain_data, f, indent=4, ensure_ascii=False)
-                        f.truncate()
-                print(f"🎵 [SISTEMA] Comando de música enviado ao Discord: <{tag_musica}>")
-            except Exception as e:
-                print(f"❌ Erro ao enviar comando remoto para o Discord: {e}")
+            resposta_inicial = resposta_inicial.replace(tag_completa, "").strip()
+            resposta_final = resposta_inicial
+
+            # Pedir música é permitido a toda a gente; o resto da máquina
+            # não. Por isso esta tag quase nunca é recusada.
+            _pode, _motivo = gate_de_permissao(papel_usuario, tag_musica.split(':')[0])
+            if not _pode:
+                print(f" [SEGURANÇA] Música recusada para {usuario_nome}: {_motivo}")
+                _sem_permissao.add("pedir música")
+            else:
+                try:
+                    if os.path.exists(BRAIN_FILE):
+                        with open(BRAIN_FILE, "r+", encoding="utf-8") as f:
+                            brain_data = json.load(f)
+                            brain_data["pending_music"] = f"<{tag_musica}>"
+                            f.seek(0)
+                            json.dump(brain_data, f, indent=4, ensure_ascii=False)
+                            f.truncate()
+                    print(f"🎵 [SISTEMA] Comando de música enviado ao Discord: <{tag_musica}>")
+                except Exception as e:
+                    print(f"❌ Erro ao enviar comando remoto para o Discord: {e}")
 
         # 🔥 2. VERIFICAÇÃO DE AÇÕES (APP E PESQUISA)
-        if "<APP:" in resposta_inicial:
+        _pode_app, _motivo_app = gate_de_permissao(papel_usuario, "APP")
+        if "<APP:" in resposta_inicial and not _pode_app:
+            print(f" [SEGURANÇA] <APP:> recusado para {usuario_nome}: {_motivo_app}")
+            resposta_inicial = re.sub(r'<APP:[^>]*>', '', resposta_inicial).strip()
+            _sem_permissao.add("abrir ou fechar programas no computador")
+        elif "<APP:" in resposta_inicial:
             resultado_app = launcher.process_llm_tag(resposta_inicial)
             if resultado_app:
                 historico_api.append({"role": "assistant", "content": resposta_inicial})
@@ -855,7 +1032,59 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 precisa_nova_resposta = True
 
         # 🔧 NOVAS FERRAMENTAS: Processar comandos de controle do PC
-        if "<COMPUTER:" in resposta_inicial:
+        # Este é o bloco mais perigoso do programa: mexer no rato, escrever
+        # com o teclado, abrir e fechar coisas. Por isso está fechado a quem
+        # não tem o papel de dono/admin.
+        _pode_pc, _motivo_pc = gate_de_permissao(papel_usuario, "COMPUTER")
+        if "<COMPUTER:" in resposta_inicial and not _pode_pc:
+            print(f" [SEGURANÇA] <COMPUTER:> recusado para {usuario_nome}: {_motivo_pc}")
+            resposta_inicial = re.sub(r'<COMPUTER:[^>]*>', '', resposta_inicial).strip()
+            _sem_permissao.add("controlar o computador")
+
+        # Uma acao perigosa fica à espera de um "sim" em vez de executar.
+        # VARREM-SE TODAS as tags, não só a primeira: uma resposta com duas
+        # tags era_half perigosa e _half segura passava a outra sem
+        # confirmação. E <APP:> também conta, porque abrir e fechar
+        # programas foi pedido com confirmação.
+        _pode_app, _motivo_app = gate_de_permissao(papel_usuario, "APP")
+        if "<APP:" in resposta_inicial and not _pode_app:
+            print(f" [SEGURANÇA] <APP:> recusado para {usuario_nome}: {_motivo_app}")
+            resposta_inicial = re.sub(r'<APP:[^>]*>', '', resposta_inicial).strip()
+            _sem_permissao.add("abrir e fechar programas")
+
+        if _confirmada and _confirmada != "CANCELADO":
+            resposta_inicial = f"{resposta_inicial}\n{_confirmada}".strip()
+        elif PERMISSOES is not None and _pode_pc and _pode_app:
+            _perigosas = []
+            for _tag in re.findall(r'<COMPUTER:\s*[\w:,\-]+>', resposta_inicial,
+                                   re.IGNORECASE):
+                _acao = _tag.split(":", 1)[1].rstrip(">").strip()
+                if PERMISSOES.precisa_confirmacao(_acao, papel_usuario):
+                    _perigosas.append(_tag)
+            # Abrir ou fechar um programa tambem pede confirmacao.
+            for _tag in re.findall(r'<APP:\s*[\w:,\-]+>', resposta_inicial,
+                                   re.IGNORECASE):
+                _acao = _tag.split(":", 1)[1].rstrip(">").strip()
+                if PERMISSOES.precisa_confirmacao(_acao, papel_usuario):
+                    _perigosas.append(_tag)
+            if _perigosas:
+                PENDENTE_PC[_chave_pessoa(usuario_nome)] = {"tags": _perigosas}
+                print(f" [SEGURANÇA] AÇÃO PERIGOSA à espera de confirmação "
+                      f"para {usuario_nome}: {' | '.join(_perigosas)}")
+                for _tag in _perigosas:
+                    resposta_inicial = resposta_inicial.replace(_tag, "").strip()
+                historico_api.append({
+                    "role": "user",
+                    "content": (
+                        f"[SISTEMA DE SEGURANÇA: NÃO EXECUTES] '{_perigosas[0]}' "
+                        f"é uma acao perigosa e o comando NÃO foi executado. "
+                        f"Pergunta ao utilizador, em UMA frase curta e natural, "
+                        f"se tem mesmo a certeza de que queres fazer isso. Só "
+                        f"quando ele disser 'sim' é que fazes."
+                    ),
+                })
+
+        if _pode_pc and "<COMPUTER:" in resposta_inicial:
             # Process computer control commands
             computer_match = re.search(r'<COMPUTER:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
             if computer_match:
@@ -914,7 +1143,12 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                         historico_api.append({"role": "user", "content": f"[SISTEMA] Tarefa: {status.get('task', 'N/A')}, Progresso: {status.get('progress', '0')}%"})
 
         # 🎨 PHOTOSHOP
-        if TOOLS_SYSTEM and "<PS:" in resposta_inicial:
+        _pode_ps, _motivo_ps = gate_de_permissao(papel_usuario, "PS")
+        if TOOLS_SYSTEM and "<PS:" in resposta_inicial and not _pode_ps:
+            print(f" [SEGURANÇA] <PS:> recusado para {usuario_nome}: {_motivo_ps}")
+            resposta_inicial = re.sub(r'<PS:[^>]*>', '', resposta_inicial).strip()
+            _sem_permissao.add("mexer no Photoshop")
+        if TOOLS_SYSTEM and _pode_ps and "<PS:" in resposta_inicial:
             ps_match = re.search(r'<PS:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
             if ps_match:
                 acao = ps_match.group(1).lower()
@@ -984,7 +1218,12 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     print(f"[ERRO PS] {e}")
 
         # 🎵 MUSICA
-        if TOOLS_SYSTEM and "<MUS:" in resposta_inicial:
+        _pode_mus, _motivo_mus = gate_de_permissao(papel_usuario, "MUS")
+        if TOOLS_SYSTEM and "<MUS:" in resposta_inicial and not _pode_mus:
+            print(f" [SEGURANÇA] <MUS:> recusado para {usuario_nome}: {_motivo_mus}")
+            resposta_inicial = re.sub(r'<MUS:[^>]*>', '', resposta_inicial).strip()
+            _sem_permissao.add("teoria/produção musical")
+        if TOOLS_SYSTEM and _pode_mus and "<MUS:" in resposta_inicial:
             mus_match = re.search(r'<MUS:\s*(\w+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
             if mus_match:
                 acao = mus_match.group(1).lower()
@@ -1052,6 +1291,9 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 except Exception as e:
                     print(f"[ERRO JOGO] {e}")
 
+        if _sem_permissao and not precisa_nova_resposta:
+            precisa_nova_resposta = True
+
         if precisa_nova_resposta:
             historico_api.append({"role": "user", "content": "Agora dê a sua resposta definitiva ao usuário incorporando o que aconteceu. REGRA ABSOLUTA: Fale com a sua personalidade de forma fluida. É PROIBIDO FAZER ROLEPLAY DE AÇÕES (NUNCA use asteriscos). NUNCA use a palavra 'pesquisa', não diga que buscou na web, e não mencione tags ou comandos. Aja simplesmente como se você tivesse lembrado dessa informação de cabeça."})
             
@@ -1096,10 +1338,15 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                 print(f" Erro na confirmacao curta: {e}")
                 resposta_final = "Feito."
 
-        print(f"{nome_ai}: {resposta_final}")
+        if not do_discord:
+            print(f"{nome_ai}: {resposta_final}")
         await gerenciar_e_salvar_memoria(client_llm, nome_ai, resposta_final)
-        await microsoft_speak(resposta_final)
-        
+        # No Discord a voz e' o canal de voz, nao os altifalantes do PC: se
+        # tocasse aqui, as duas iam falar uma por cima da outra.
+        if not do_discord:
+            await microsoft_speak(resposta_final)
+        return resposta_final
+
     except Exception as e:
         if _e_rate_limit(e):
             print(" [LIMITE] A API da Groq recusou por excesso de pedidos. Tenta daqui a bocado.")
@@ -1107,6 +1354,7 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
         else:
             print(f" Erro na API LLM ({provedor_local}): {e}")
             print(f"{nome_ai}: deu-me um erro a falar com a API. Tenta outra vez.")
+        return None
 #endregion
 # ======================================================
 # region 🎤 MODOS DE OPERAÇÃO
@@ -1352,6 +1600,106 @@ async def run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, a
             break
 #endregion
 # ======================================================
+#region 👾 DISCORD
+# ======================================================
+# O bot vive numa thread com o loop dele e fala com o cerebro através
+# deste `responder`. E' o unico fio entre os dois: o Discord diz "a pessoa
+# X pediu Y com o papel Z" e o run.py devolve a frase ja limpa de tags.
+_RESPONDER_DISCORD = {}
+
+
+async def _responder_ao_discord(info):
+    """Ponte entre o bot do Discord e o cerebro. Devolve a resposta em texto."""
+    client_nvidia = _RESPONDER_DISCORD.get("nvidia")
+    client_llm = _RESPONDER_DISCORD.get("llm")
+    client_vision = _RESPONDER_DISCORD.get("vision")
+    if client_llm is None:
+        return "O meu cérebro ainda está a arrancar."
+    sys_prompt = _RESPONDER_DISCORD.get("sys_prompt")
+    nome_ai = _RESPONDER_DISCORD.get("nome_ai", "Haimiya")
+    launcher = _RESPONDER_DISCORD.get("launcher")
+
+    return await processar_ia(
+        client_nvidia, client_llm, client_vision, sys_prompt,
+        info["texto"], nome_ai,
+        # Quem escreveu é quem interessa para o histórico E para a
+        # confirmação de ações perigosas, por isso vai o nome e não o
+        # "utilizador do Discord".
+        info["autor"], launcher,
+        modo_chat=True,
+        papel_usuario=info.get("papel", PAPEL_COMUM),
+        origem="discord",
+    )
+
+
+def ligar_discord(client_nvidia, client_llm, client_vision, sys_prompt,
+                  nome_ai, launcher):
+    """Liga o bot do Discord. Devolve o controlador, ou None se nao deu."""
+    global DISCORD_BOT
+    if DISCORD_BOT is not None:
+        print(" [DISCORD] Já está ligado.")
+        return DISCORD_BOT
+    if not os.getenv("DISCORD_TOKEN", "").strip():
+        print(" ERRO: DISCORD_TOKEN em falta no .env.")
+        print(" Cria um bot no Discord Developer Portal e mete o token no .env.")
+        return None
+
+    _RESPONDER_DISCORD.update({
+        "nvidia": client_nvidia, "llm": client_llm, "vision": client_vision,
+        "sys_prompt": sys_prompt, "nome_ai": nome_ai, "launcher": launcher,
+    })
+
+    try:
+        # Importado aqui e não no topo: sem o discord.py instalado, a voz
+        # local, a visão e o PC têm de continuar a funcionar na mesma.
+        from Arcana.Net.discord_Rem import iniciar_bot_discord
+    except Exception as e:
+        print(f" ERRO: o discord.py não está instalado ({e}).")
+        print(" Corre:  pip install discord.py")
+        return None
+
+    try:
+        DISCORD_BOT = iniciar_bot_discord(
+            _responder_ao_discord, nome_ai=nome_ai,
+            # Chave propria para o Whisper e' opcional: sem ela vai a do
+            # LLM, que e' a mesma conta da Groq.
+            api_whisper=os.getenv("GROQ_API_KEY_STT") or GROQ_API_KEY_LLM,
+            caminho_brain=BRAIN_FILE,
+            loop_principal=asyncio.get_running_loop(),
+        )
+    except Exception as e:
+        print(f" ERRO ao ligar o Discord: {e}")
+        DISCORD_BOT = None
+        return None
+
+    # A IA lê o prompt uma vez no arranque; se o Discord acrescentar
+    # pessoas novas, é preciso reler as permissões do brain.json.
+    global PERMISSOES
+    PERMISSOES = Permissoes(caminho=BRAIN_FILE)
+    print("🌐 Discord a ligar... (entra na tua call no Discord com !entrar)")
+    return DISCORD_BOT
+
+
+def desligar_discord():
+    global DISCORD_BOT
+    if DISCORD_BOT is None:
+        print(" [DISCORD] Não está ligado.")
+        return
+    try:
+        DISCORD_BOT.parar()
+        print("\n [SISTEMA] Discord DESLIGADO.")
+    except Exception as e:
+        print(f" Erro ao desligar o Discord: {e}")
+    DISCORD_BOT = None
+
+
+def estado_discord():
+    if DISCORD_BOT is None:
+        return False, "DESLIGADO"
+    return True, DISCORD_BOT.estado()
+
+
+# ======================================================
 #region 🚀 MAIN
 # ======================================================
 async def main():
@@ -1452,14 +1800,26 @@ async def main():
     
     # [O ERRO ESTAVA AQUI: Existia um keyboard.on_press_key('f2', toggle_visao) fantasma! Removido.]
 
-    discord_thread = None
+    # 👾 DISCORD: liga se o cérebro disser que sim. O `discord_active` no
+    # brain.json é o botão do painel (F4); o token é o que diz se é
+    # possível. Sem token, avisa e segue na mesma — a voz local não pode
+    # depender do Discord estar configurado.
+    global PERMISSOES
+    PERMISSOES = Permissoes(caminho=BRAIN_FILE)
+    print(f"🔒 Permissões: comum = {PERMISSOES.resumo_papel(PAPEL_COMUM)}")
+    print(f"🔒 Permissões: {len(PERMISSOES.ids_de('dono_ids'))} dono(s), "
+          f"{len(PERMISSOES.ids_de('admin_ids'))} admin(s) na lista.")
+
     if discord_active:
         print("\n🌐 Despertando a Rem no Discord...")
-#        discord_thread = threading.Thread(target=run_discord_bot, daemon=True)
-#        discord_thread.start()
+        ligar_discord(client_nvidia, client_llm, client_vision, sys_prompt,
+                      nome_ai, launcher)
+    else:
+        print("🌐 Discord desligado. Liga com a opção 4 do menu, ou pelo painel (F4).")
 
     while True:
         _, _, _, trigger, discord_active, modelos, _ = carregar_brain()
+        _ligado, _estado = estado_discord()
         print(f"\n{'='*15} MENU {nome_ai} {'='*15}")
         print(f"Gatilho F3: {'LIGADO' if trigger else 'DESLIGADO'}")
         print(f"Visão F2: {'LIGADA' if VISAO_HABILITADA else 'DESLIGADA'}")
@@ -1469,17 +1829,17 @@ async def main():
             print(f"Ouvinte PC: {'a escutar' if _est['vivo'] else 'inativo'} "
                   f"({_est['dispositivo'] or 'sem dispositivo'}"
                   f"{', há som' if _est['tem_som'] else ''})")
-        print(f"Discord: {'LIGADO' if discord_active else 'DESLIGADO'}")
+        print(f"Discord: {_estado}")
         print(f"Utilizador atual: {usuario_nome}")
         print("| 1. Chat")
         print("| 2. Voz Contínua")
         print("| 3. Click-to-Talk")
-        print("| 4. Alternar Discord")
+        print("| 4. Ligar/Desligar Discord")
         print("| 5.  Painel Gráfico (Mudar Cérebro Nvidia/Groq)")
         print("| 6.  👂 Escutar o Áudio do PC (tempo real)")
         print("| 7.  Parar de Escutar")
         print("| 0. Sair")
-        
+
         op = await asyncio.to_thread(input, "Opção: ")
         if op == '1':
             while True:
@@ -1489,16 +1849,20 @@ async def main():
         elif op == '2': await run_modo_continuo(client_nvidia, client_llm, client_vision, sys_prompt, voice_filter, GROQ_API_KEY_LLM, nome_ai, usuario_nome, launcher)
         elif op == '3': await run_modo_click(client_nvidia, client_llm, client_vision, sys_prompt, GROQ_API_KEY_LLM, nome_ai, usuario_nome, launcher)
         elif op == '4':
-            discord_active = not discord_active
-            salvar_discord_brain(discord_active)
-            if discord_active:
-                print("\n [SISTEMA] Discord foi LIGADO e salvo na memória.")
-                if discord_thread is None or not discord_thread.is_alive():
-                    print("🌐 Despertando a Rem no Discord...")
-#                   discord_thread = threading.Thread(target=run_discord_bot, daemon=True)
-#                    discord_thread.start()
+            _ligado, _ = estado_discord()
+            if _ligado:
+                desligar_discord()
             else:
-                print("\n [SISTEMA] Discord foi DESLIGADO (A ligação ao servidor será encerrada no próximo reinício do script).")
+                ligar_discord(client_nvidia, client_llm, client_vision, sys_prompt,
+                              nome_ai, launcher)
+            # O estado guardado é o do PAINEL. O que estiver ligado a sério
+            # manda no que fica gravado, senão o menu e a verdade
+            # divergem e a opção 4 volta a ligar o que se desligou à mão.
+            discord_active = estado_discord()[0]
+            salvar_discord_brain(discord_active)
+            print(f" [SISTEMA] Discord gravado como {'LIGADO' if discord_active else 'DESLIGADO'}.")
+            if discord_active:
+                print(" No Discord usa: !entrar  (entra na tua call)  |entrar")
         elif op == '5':
             await asyncio.to_thread(abrir_gui_modelos)
         elif op == '6':
@@ -1511,7 +1875,9 @@ async def main():
             MODO_ESCUTA_ATIVA = False
             print("\n👂 Escuta do PC DESLIGADA (ela parou de escutar)")
         
-        elif op == '0': break
+        elif op == '0':
+            desligar_discord()
+            break
 if __name__ == "__main__":
     asyncio.run(main())
 #endregion
