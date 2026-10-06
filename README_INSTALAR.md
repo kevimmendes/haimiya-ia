@@ -52,3 +52,18 @@ SISTEMA DE OVERLAY ```
 // Otimizado por: Christopher  
 // Masterizado por: Nero
 ```
+===============================XX------------------------------------XX==============================================
+
+
+🧰 NOVAS FUNÇÕES (utilidades do dia a dia)
+A IA já entende sozinha estes pedidos em português — ela mesma monta a tag certa:
+
+- CEP, CNPJ, feriados e validação de CPF (BrasilAPI)
+- Clima da cidade (agora + 3 dias), cotação do dólar/euro/bitcoin e geolocalização
+- Senha vazada? (verificação anónima k-Anonymity — a senha nunca sai do PC)
+- Resumo de vídeo do YouTube (título, canal e descrição/transcrição)
+- Auditoria de disco (ficheiros gigantes e temporários) e diagnóstico do código
+- Pomodoro com aviso sonoro, lembretes com alerta proativo e tradução de commits PT->EN
+
+Tudo passa pelas tags <UTIL:...> e NÃO mexe nas funções antigas.
+Erros de rede/serviço ficam registados em Arcana/armazen/utilidades.log.

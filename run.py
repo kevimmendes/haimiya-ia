@@ -25,6 +25,17 @@ from groq import Groq
 from openai import OpenAI  # Apenas para o LLM principal Kimi via NVIDIA
 from dotenv import load_dotenv
 
+# 🧰 UTILIDADES NERIVA (CEP, CNPJ, clima, pomodoro, lembretes, ...).
+# Módulo novo e isolado: se o import falhar, a app continua normalmente
+# e ficam só as tags <UTIL:> indisponíveis (com log do motivo).
+try:
+    from Arcana.Tools import utilidades
+    UTILIDADES_OK = True
+except Exception as _e_util:
+    utilidades = None
+    UTILIDADES_OK = False
+    print(f" [UTILIDADES] Desativadas — import falhou: {type(_e_util).__name__}: {_e_util}")
+
 # A consola do Windows usa cp1252 e rebenta com emojis (UnicodeEncodeError).
 # Passa para UTF-8 logo no arranque, antes de qualquer print.
 for _stream in (sys.stdout, sys.stderr):
@@ -101,6 +112,12 @@ AUDIO_PC_PROATIVO = os.getenv("AUDIO_PC_PROATIVO", "false").strip().lower() in (
 # erro matava a resposta da Haimiya na hora e ela ficava calada sem dizer
 # nada. Agora: espera, volta a tentar, e se nao houver jeito avisa em portugues.
 ESPERAS_RATE_LIMIT = [4, 10, 25]   # segundos entre tentativas
+
+# ⏰ AGENDA DE ALERTAS (pomodoro + lembretes) — módulo novo.
+# AGENDA: itens por executar (epoch). ALERTAS_PENDENTES: o que já disparou
+# e ainda não foi entregue ao LLM (entregue-se na próxima resposta).
+AGENDA = []
+ALERTAS_PENDENTES = []
 
 
 def _e_rate_limit(erro):
@@ -379,7 +396,9 @@ def carregar_memoria():
     if not os.path.exists(MEMORIA_FILE): return {"master_summary": "", "recent_summaries": [], "mensagens": []}
     try:
         with open(MEMORIA_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return {"master_summary": "", "recent_summaries": [], "mensagens": []}
+    except Exception as e:
+        print(f" [MEMORIA][ERRO] não consegui ler {MEMORIA_FILE}: {type(e).__name__}: {e}")
+        return {"master_summary": "", "recent_summaries": [], "mensagens": []}
 
 def salvar_memoria(memoria):
     with open(MEMORIA_FILE, 'w', encoding='utf-8') as f:
@@ -389,7 +408,9 @@ def carregar_memoria_pesquisa():
     if not os.path.exists(SEARCH_MEMORY_FILE): return {"master_search_summary": "", "recent_searches": []}
     try:
         with open(SEARCH_MEMORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return {"master_search_summary": "", "recent_searches": []}
+    except Exception as e:
+        print(f" [MEMORIA][ERRO] não consegui ler {SEARCH_MEMORY_FILE}: {type(e).__name__}: {e}")
+        return {"master_search_summary": "", "recent_searches": []}
 
 async def gerenciar_memoria_pesquisa(client_llm, query, resultados):
     memoria = carregar_memoria_pesquisa()
@@ -522,7 +543,7 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <MUS:escala:Am,menor> - Notas de uma escala"
         prompt_completo += "\n- <MUS:acorde:C,menor> - Notas e qualidade de um acorde"
         prompt_completo += "\n- <MUS:progressao:C,menor,pop> - Progressão por género"
-        prompt_completo += "\n- <MUS:estrutura:trap,140> - Estrutura de一首 com tempos".replace("一首", "uma música")
+        prompt_completo += "\n- <MUS:estrutura:trap,140> - Estrutura de uma música com tempos"
         prompt_completo += "\n- <MUS:mix:voz|baixo|bateria|sintetizador> - Chain de mixagem por instrumento"
         prompt_completo += "\n- <MUS:master:pop,spotify> - Chain de masterização com alvo de loudness"
         prompt_completo += "\n- <MUS:comp:voz,3,15> - Compressor com ataque/release"
@@ -536,6 +557,26 @@ def construir_historico_para_api(sys_prompt, memoria, nome_ai, launcher=None):
         prompt_completo += "\n- <JOGO:correr> - Ver que jogos estão a correr"
         prompt_completo += "\n- <JOGO:screenshot> - Analisar o ecrã de jogo com visão"
         prompt_completo += "\nREGRA JOGO: quando o usuário travar num jogo, pesquisa na web e dá passos concretos. Não inventes soluções sem pesquisar."
+
+    # 🧰 UTILIDADES DO DIA A DIA (módulo novo — só acrescentado, nada existente mudou)
+    if UTILIDADES_OK:
+        prompt_completo += "\n\n[UTILIDADES DO DIA A DIA] — tags <UTIL:ação:parâmetro> (executam de verdade):"
+        prompt_completo += "\n- <UTIL:cep:01310-100> - Endereço do CEP (BrasilAPI)"
+        prompt_completo += "\n- <UTIL:cnpj:00.000.000/0001-91> - Dados da empresa (BrasilAPI)"
+        prompt_completo += "\n- <UTIL:feriados:2026> - Feriados nacionais do ano"
+        prompt_completo += "\n- <UTIL:cpf:123.456.789-09> - Valida o CPF pelos dígitos verificadores"
+        prompt_completo += "\n- <UTIL:clima:Lisboa> - Tempo agora + 3 dias"
+        prompt_completo += "\n- <UTIL:cotacao:dolar> - Cotação vs Real (dolar|euro|bitcoin|libra|iene)"
+        prompt_completo += "\n- <UTIL:geolocalizar:Porto> - Coordenadas de uma cidade"
+        prompt_completo += "\n- <UTIL:senha_vazada:minha_senha> - Verifica se a senha foi vazada (anónimo, k-Anonymity)"
+        prompt_completo += "\n- <UTIL:youtube:https://youtu.be/ID> - Título, canal e transcrição do vídeo"
+        prompt_completo += "\n- <UTIL:auditoria_disco> - Ficheiros gigantes e temporários no disco"
+        prompt_completo += "\n- <UTIL:diagnostico> - Procura erros/TODOs no código"
+        prompt_completo += "\n- <UTIL:pomodoro:25> - Temporizador de foco com aviso sonoro no fim"
+        prompt_completo += "\n- <UTIL:lembretar:10:texto do lembrete> - Lembrete em minutos"
+        prompt_completo += "\n- <UTIL:lembretes> - Lista de lembretes e pomodoros pendentes"
+        prompt_completo += "\n- <UTIL:traduzir_commits> - Traduz os últimos commits PT->EN"
+        prompt_completo += "\nREGRA UTIL: UMA tag por resposta, e só quando o pedido for mesmo destas coisas. Nunca inventes o resultado: o sistema executa e devolve os dados reais."
 
     # Integração de Memórias
     memoria_pesquisa = carregar_memoria_pesquisa()
@@ -686,6 +727,96 @@ async def ouvir_pc_e_descrever(segundos=None):
 # ======================================================
 #region 🕹️ CÉREBRO DA IA (PROCESSAMENTO INTEGRADO LLM + SCOUT)
 # ======================================================
+async def scheduler_alertas():
+    """⏰ MÓDULO NOVO: verifica a AGENDA a cada 2s e dispara pomodoros/lembretes.
+    Ao disparar: beep + log em consola + entrega ao LLM na próxima resposta."""
+    while True:
+        await asyncio.sleep(2)
+        try:
+            if not AGENDA:
+                continue
+            agora = time.time()
+            vencidos = [a for a in AGENDA if a.get("prazo", 0) <= agora]
+            for item in vencidos:
+                AGENDA.remove(item)
+                texto = item.get("texto", "Tempo esgotado.")
+                tipo = item.get("tipo", "lembrete")
+                marca = "🍅 POMODORO" if tipo == "pomodoro" else "🔔 LEMBRETE"
+                print(f"\n{marca} [ALERTA] {texto}")
+                play_beep("fim")
+                ALERTAS_PENDENTES.append(f"{marca}: {texto}")
+        except Exception as e:
+            print(f" [UTILIDADES][ERRO] scheduler de alertas: {type(e).__name__}: {e}")
+
+
+async def processar_utilidade(acao, param, client_llm):
+    """Executa a ação de uma tag <UTIL:...> e devolve texto para o LLM."""
+    if acao == "pomodoro":
+        minutos = 25.0
+        if param:
+            try:
+                minutos = float(re.sub(r"[^\d.]", "", param.split(",")[0]) or 25)
+            except ValueError:
+                print(f" [UTILIDADES][ERRO] pomodoro com minuto inválido: {param!r}")
+        minutos = max(1.0, min(minutos, 120.0))
+        AGENDA.append({"prazo": time.time() + minutos * 60, "tipo": "pomodoro",
+                       "texto": f"Pomodoro de {minutos:g} minutos acabou. Hora de fazer uma pausa."})
+        print(f" [UTILIDADES] Pomodoro de {minutos:g} min agendado.")
+        return f"Pomodoro de {minutos:g} minutos iniciado. Aviso sonoro quando terminar."
+
+    if acao == "lembretar":
+        m = re.match(r"^\s*(\d+)\s*[:,]\s*(.+)$", param or "")
+        if not m:
+            return "Formato errado. Usa <UTIL:lembretar:minutos:texto> (ex: lembretar:10:beber água)."
+        minutos, texto_lembrete = int(m.group(1)), m.group(2).strip()
+        if minutos < 1 or minutos > 1440:
+            return "Minutos fora do intervalo (1 a 1440 = 24h)."
+        AGENDA.append({"prazo": time.time() + minutos * 60, "tipo": "lembrete", "texto": texto_lembrete})
+        print(f" [UTILIDADES] Lembrete agendado: '{texto_lembrete}' em {minutos} min.")
+        return f"Lembrete agendado para daqui a {minutos} minutos: '{texto_lembrete}'."
+
+    if acao == "lembretes":
+        if not AGENDA:
+            return "Não há lembretes nem pomodoros pendentes."
+        linhas = []
+        for item in sorted(AGENDA, key=lambda a: a.get("prazo", 0)):
+            falta = max(0, int((item.get("prazo", 0) - time.time()) / 60))
+            linhas.append(f"- {item.get('tipo', 'lembrete')}: {item.get('texto')} (daqui a ~{falta} min)")
+        return "Pendentes:\n" + "\n".join(linhas)
+
+    if acao == "traduzir_commits":
+        return await traduzir_commits(client_llm)
+
+    # Resto das ações corre no módulo de utilidades (fora do event loop
+    # para não bloquear a app durante pedidos HTTP de até 12s).
+    r = await asyncio.to_thread(utilidades.executar, acao, param)
+    print(f" [UTILIDADES] <UTIL:{acao}:{param or ''}> -> {r.splitlines()[0][:120] if r else 'vazio'}")
+    return r
+
+
+async def traduzir_commits(client_llm):
+    """Traduz os últimos commits PT->EN com o LLM já configurado (sem custo extra de cliente)."""
+    try:
+        out = subprocess.run(["git", "log", "-8", "--pretty=%s"], capture_output=True,
+                             text=True, timeout=20, encoding="utf-8", errors="replace")
+        if out.returncode != 0:
+            raise RuntimeError(out.stderr.strip() or "git log devolveu erro")
+        linhas = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+    except Exception as e:
+        print(f" [UTILIDADES][ERRO] git log: {type(e).__name__}: {e}")
+        return f"Falha ao ler os commits ({type(e).__name__}: {e}). Só funciona dentro do repositório git."
+    if not linhas:
+        return "Não há commits nesta branch."
+    traducao = await resumir_com_ia(
+        client_llm, linhas,
+        "Traduz cada linha de commit do português para inglês, no padrão conventional commits. "
+        "Responde SÓ com uma linha por commit, no formato: 'original -> tradução'. Sem explicações.")
+    if not traducao:
+        print(" [UTILIDADES][ERRO] traduzir_commits: o LLM não devolveu tradução.")
+        return "Não consegui traduzir os commits agora (o LLM não respondeu — ver log)."
+    return "Tradução dos últimos commits:\n" + traducao
+
+
 async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, texto, nome_ai, usuario_nome, launcher, modo_chat=False):
     if not modo_chat:
         print(f"{usuario_nome}: {texto}")
@@ -694,6 +825,18 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
     memoria_atual = carregar_memoria()
     
     historico_api = construir_historico_para_api(sys_prompt, memoria_atual, nome_ai, launcher)
+
+    # ⏰ ALERTAS PENDENTES (pomodoro/lembrete disparado) — entregues ao LLM
+    # como contexto, para ela mencionar de forma natural e proativa.
+    if ALERTAS_PENDENTES:
+        try:
+            historico_api[-1]["content"] += (
+                "\n\n[ALERTAS DO SISTEMA] Acabou de disparar: "
+                + " | ".join(ALERTAS_PENDENTES)
+                + ". Menciona isto de forma natural e curta, sem roleplay de ações.")
+            ALERTAS_PENDENTES.clear()
+        except Exception as e:
+            print(f" [UTILIDADES][ERRO] ao injetar alertas: {type(e).__name__}: {e}")
     
     # 🔥 INJETOR DE PRESSÃO: Força o LLM a não esquecer a tag da música
     comando_musica = detectar_comando_musica(texto)
@@ -767,6 +910,19 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     )
             except Exception as e:
                 print(f" Erro ao ouvir o áudio do PC: {e}")
+
+    # 🎯 CLASSIFICADOR DE INTENÇÃO (módulo novo): anota no system prompt se a
+    # fala é técnica, social ou ação direta. Heurística local — custa 0 tokens.
+    try:
+        intencao = utilidades.classificar_intencao(texto) if UTILIDADES_OK else None
+        if intencao:
+            historico_api[0]["content"] += (
+                f"\n\n[CLASSIFICADOR DE INTENÇÃO DO SISTEMA] A fala atual é classificada como: "
+                f"{intencao}. Usa isto para calibrar o tom: 'técnica' -> resposta técnica e "
+                f"objetiva; 'ação direta' -> executa a tag certa sem conversa; 'social' -> "
+                f"responde como sempre, curta e com personalidade.")
+    except Exception as e:
+        print(f" [UTILIDADES][ERRO] classificador de intenção: {type(e).__name__}: {e}")
 
     # 🧠 LÓGICA DO CÉREBRO PRINCIPAL
     _, _, _, _, _, modelos_config, *_ = carregar_brain()
@@ -1051,6 +1207,22 @@ async def processar_ia(client_nvidia, client_llm, client_vision, sys_prompt, tex
                     precisa_nova_resposta = True
                 except Exception as e:
                     print(f"[ERRO JOGO] {e}")
+
+        # 🧰 UTILIDADES DO DIA A DIA (módulo novo)
+        if UTILIDADES_OK and "<UTIL:" in resposta_inicial:
+            util_match = re.search(r'<UTIL:\s*([\w_çãõáéíóúà]+)(?::\s*([^>]*))?>', resposta_inicial, re.IGNORECASE)
+            if util_match:
+                tag_util = util_match.group(0)
+                acao_util = util_match.group(1).lower()
+                param_util = util_match.group(2).strip() if util_match.group(2) else None
+                resposta_inicial = resposta_inicial.replace(tag_util, "").strip()
+                resposta_final = resposta_inicial
+                try:
+                    r_util = await processar_utilidade(acao_util, param_util, client_llm)
+                    historico_api.append({"role": "user", "content": f"[SISTEMA UTIL] {r_util}"})
+                    precisa_nova_resposta = True
+                except Exception as e:
+                    print(f" [UTILIDADES][ERRO] tag <UTIL:{acao_util}>: {type(e).__name__}: {e}")
 
         if precisa_nova_resposta:
             historico_api.append({"role": "user", "content": "Agora dê a sua resposta definitiva ao usuário incorporando o que aconteceu. REGRA ABSOLUTA: Fale com a sua personalidade de forma fluida. É PROIBIDO FAZER ROLEPLAY DE AÇÕES (NUNCA use asteriscos). NUNCA use a palavra 'pesquisa', não diga que buscou na web, e não mencione tags ou comandos. Aja simplesmente como se você tivesse lembrado dessa informação de cabeça."})
@@ -1449,7 +1621,12 @@ async def main():
                                vision_model=MODELO_VISAO, vision_local=VISAO_LOCAL)
 
     carregar_memoria()
-    
+
+    # ⏰ Agenda de alertas (pomodoro/lembretes) a correr em background.
+    if UTILIDADES_OK:
+        asyncio.create_task(scheduler_alertas())
+        print(" ⏰ Agenda de pomodoro/lembretes LIGADA (background)")
+
     # [O ERRO ESTAVA AQUI: Existia um keyboard.on_press_key('f2', toggle_visao) fantasma! Removido.]
 
     discord_thread = None
